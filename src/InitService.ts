@@ -63,6 +63,7 @@ RUN apt-get update && apt-get install -y \\
   git \\
   curl \\
   jq \\
+  ripgrep \\
   && rm -rf /var/lib/apt/lists/*
 
 {{BACKLOG_MANAGER_TOOLS}}
@@ -98,6 +99,7 @@ RUN apt-get update && apt-get install -y \\
   git \\
   curl \\
   jq \\
+  ripgrep \\
   && rm -rf /var/lib/apt/lists/*
 
 {{BACKLOG_MANAGER_TOOLS}}
@@ -131,6 +133,7 @@ RUN apt-get update && apt-get install -y \\
   git \\
   curl \\
   jq \\
+  ripgrep \\
   && rm -rf /var/lib/apt/lists/*
 
 {{BACKLOG_MANAGER_TOOLS}}
@@ -164,6 +167,7 @@ RUN apt-get update && apt-get install -y \\
   git \\
   curl \\
   jq \\
+  ripgrep \\
   && rm -rf /var/lib/apt/lists/*
 
 {{BACKLOG_MANAGER_TOOLS}}
@@ -257,6 +261,14 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \\
   && apt-get update && apt-get install -y gh \\
   && rm -rf /var/lib/apt/lists/*`;
 
+const GITLAB_CLI_TOOLS = `# Install GitLab CLI
+RUN GLAB_DEB_URL=$(curl -fsSL https://gitlab.com/api/v4/projects/34675721/releases/permalink/latest \\
+  | jq -r '.assets.links[] | select(.name | endswith("linux_amd64.deb")) | .url') \\
+  && curl -fsSL "$GLAB_DEB_URL" -o /tmp/glab.deb \\
+  && apt-get update && apt-get install -y /tmp/glab.deb \\
+  && rm -f /tmp/glab.deb \\
+  && rm -rf /var/lib/apt/lists/*`;
+
 const BEADS_TOOLS = `# Install system dependencies for Beads
 RUN apt-get update && apt-get install -y \\
   dpkg-dev \\
@@ -294,6 +306,18 @@ GH_TOKEN=`,
       BACKLOG_MANAGER_TOOLS: BEADS_TOOLS,
     },
     envExample: "",
+  },
+  {
+    name: "gitlab",
+    label: "GitLab Issues",
+    templateArgs: {
+      LIST_TASKS_COMMAND: `glab issue list -R "$(git remote get-url origin)" --label ready-for-agent -O json -P 100`,
+      VIEW_TASK_COMMAND: `glab issue view -R "$(git remote get-url origin)" <ID>`,
+      CLOSE_TASK_COMMAND: `sh -lc 'repo="$(git remote get-url origin)" && glab issue note -R "$repo" <ID> -m "Completed by Sandcastle" && glab issue close -R "$repo" <ID>'`,
+      BACKLOG_MANAGER_TOOLS: GITLAB_CLI_TOOLS,
+    },
+    envExample: `# GitLab personal access token
+GITLAB_TOKEN=`,
   },
 ];
 
@@ -699,8 +723,9 @@ export const scaffold = (
     // Replace backlog manager template arguments in all text files (must run before label stripping)
     yield* substituteTemplateArgs(configDir, backlogManager);
 
-    // Strip --label Sandcastle from prompt files when the user declined label creation
-    if (!createLabel) {
+    // Strip --label Sandcastle from prompt files only for GitHub issue scaffolds
+    // when the user explicitly declined label creation.
+    if (!createLabel && backlogManager.name === "github-issues") {
       yield* rewritePromptFiles(configDir);
     }
 

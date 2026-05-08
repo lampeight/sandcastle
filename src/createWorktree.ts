@@ -55,6 +55,10 @@ import {
 import { noSandbox } from "./sandboxes/no-sandbox.js";
 import { raceAbortSignal } from "./raceAbortSignal.js";
 import type { Timeouts } from "./run.js";
+import {
+  applyPreparedAgentRuntime,
+  prepareAgentRuntime,
+} from "./AgentPreparation.js";
 
 /** Branch strategies valid for createWorktree — head is excluded. */
 export type WorktreeBranchStrategy =
@@ -292,9 +296,15 @@ export const createWorktree = async (
 
       // 2. Resolve env vars
       const resolvedEnv = yield* resolveEnv(hostRepoDir);
+      const preparedRuntime = yield* Effect.promise(() =>
+        prepareAgentRuntime(provider, hostRepoDir),
+      );
       const env = mergeProviderEnv({
         resolvedEnv,
-        agentProviderEnv: provider.env,
+        agentProviderEnv: {
+          ...provider.env,
+          ...(preparedRuntime?.env ?? {}),
+        },
         sandboxProviderEnv: resolvedSandbox.env,
       });
       const effectiveEnv = { ...env, ...(opts.env ?? {}) };
@@ -320,7 +330,6 @@ export const createWorktree = async (
         yield* validateNoArgsWithInlinePrompt(opts.promptArgs ?? {});
       }
 
-      // Display intro
       yield* d.intro(opts.name ?? "sandcastle interactive");
       yield* d.summary("Interactive Session", {
         Agent: opts.name ?? provider.name,
@@ -397,11 +406,21 @@ export const createWorktree = async (
               const fullPrompt =
                 !hasPromptSource || isInlinePrompt
                   ? substitutedPrompt
-                  : yield* preprocessPrompt(
-                      substitutedPrompt,
-                      ctx.sandbox,
-                      ctx.sandboxRepoDir,
-                    );
+                  : yield* Effect.gen(function* () {
+                      yield* applyPreparedAgentRuntime(
+                        preparedRuntime,
+                        ctx.sandbox,
+                      );
+                      return yield* preprocessPrompt(
+                        substitutedPrompt,
+                        ctx.sandbox,
+                        ctx.sandboxRepoDir,
+                      );
+                    });
+
+              if (!hasPromptSource || isInlinePrompt) {
+                yield* applyPreparedAgentRuntime(preparedRuntime, ctx.sandbox);
+              }
 
               const interactiveArgs = provider.buildInteractiveArgs!({
                 prompt: fullPrompt,
@@ -444,8 +463,10 @@ export const createWorktree = async (
           exitCode,
         } satisfies InteractiveResult;
       }).pipe(
-        // Always close sandbox handle
         Effect.ensuring(Effect.promise(() => handle.close().catch(() => {}))),
+        Effect.ensuring(
+          Effect.promise(() => preparedRuntime?.cleanup?.() ?? Promise.resolve()),
+        ),
       );
     });
 
@@ -499,9 +520,15 @@ export const createWorktree = async (
 
       // 2. Resolve env vars
       const resolvedEnv = yield* resolveEnv(hostRepoDir);
+      const preparedRuntime = yield* Effect.promise(() =>
+        prepareAgentRuntime(provider, hostRepoDir),
+      );
       const env = mergeProviderEnv({
         resolvedEnv,
-        agentProviderEnv: provider.env,
+        agentProviderEnv: {
+          ...provider.env,
+          ...(preparedRuntime?.env ?? {}),
+        },
         sandboxProviderEnv: sandboxProvider.env,
       });
       const effectiveEnv = { ...env, ...(opts.env ?? {}) };
@@ -630,13 +657,21 @@ export const createWorktree = async (
           idleTimeoutSeconds: opts.idleTimeoutSeconds,
           name: opts.name,
           resumeSession: opts.resumeSession,
+          preparedRuntime,
           signal: opts.signal,
           skipPromptExpansion: isInlinePrompt,
         });
       }).pipe(
         Effect.provide(runLayer),
         // Always close sandbox handle
-        Effect.ensuring(Effect.promise(() => handle.close().catch(() => {}))),
+        Effect.ensuring(
+          Effect.all([
+            Effect.promise(() => handle.close().catch(() => {})),
+            Effect.promise(
+              () => preparedRuntime?.cleanup?.() ?? Promise.resolve(),
+            ),
+          ]).pipe(Effect.asVoid),
+        ),
       );
 
       return {

@@ -805,10 +805,13 @@ The `codex()` factory accepts an optional second argument for provider-specific 
 agent: codex("gpt-5.4", { effort: "high" });
 ```
 
-| Option   | Type                                           | Default | Description                                               |
-| -------- | ---------------------------------------------- | ------- | --------------------------------------------------------- |
-| `effort` | `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` | —       | Codex reasoning effort level via `model_reasoning_effort` |
-| `env`    | `Record<string, string>`                       | `{}`    | Environment variables injected by this agent provider     |
+| Option         | Type                                           | Default | Description                                                                 |
+| -------------- | ---------------------------------------------- | ------- | --------------------------------------------------------------------------- |
+| `effort`       | `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` | —       | Codex reasoning effort level via `model_reasoning_effort`                   |
+| `env`          | `Record<string, string>`                       | `{}`    | Environment variables injected by this agent provider                       |
+| `authRotation` | `boolean \| CodexAuthRotationOptions`          | `false` | Rotate per-run Codex auth snapshots from a host `~/.codex/auth-*.json` pool |
+
+When `authRotation` is enabled, Sandcastle snapshots one host Codex identity per run and copies it into the sandbox as `/home/agent/.codex/auth.json`. This is intended for teams that maintain multiple pre-authenticated Codex identities on the host and want parallel sandbox runs to spread across them without mutating the host's active `auth.json` mid-run.
 
 ### Provider `env`
 

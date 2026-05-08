@@ -49,6 +49,7 @@ import type {
   OutputStringDefinition,
 } from "./Output.js";
 import { extractStructuredOutput } from "./extractStructuredOutput.js";
+import { prepareAgentRuntime } from "./AgentPreparation.js";
 
 /** Default maximum number of iterations for a run. */
 export const DEFAULT_MAX_ITERATIONS = 1;
@@ -405,6 +406,7 @@ export async function run(options: RunOptions): Promise<RunResult & { output?: u
   }
 
   const agentName = provider.name;
+  const preparedRuntime = await prepareAgentRuntime(provider, hostRepoDir);
 
   // Resolve env vars and merge with provider env
   const resolvedEnv = await Effect.runPromise(
@@ -412,7 +414,10 @@ export async function run(options: RunOptions): Promise<RunResult & { output?: u
   );
   const env = mergeProviderEnv({
     resolvedEnv,
-    agentProviderEnv: provider.env,
+    agentProviderEnv: {
+      ...provider.env,
+      ...(preparedRuntime?.env ?? {}),
+    },
     sandboxProviderEnv: options.sandbox.env,
   });
 
@@ -542,6 +547,7 @@ export async function run(options: RunOptions): Promise<RunResult & { output?: u
       idleTimeoutSeconds: options.idleTimeoutSeconds,
       name: options.name,
       resumeSession: options.resumeSession,
+      preparedRuntime,
       signal: options.signal,
       skipPromptExpansion: isInlinePrompt,
     });
@@ -586,6 +592,8 @@ export async function run(options: RunOptions): Promise<RunResult & { output?: u
     // If the signal was aborted, surface its reason verbatim (no wrapping)
     options.signal?.throwIfAborted();
     throw error;
+  } finally {
+    await preparedRuntime?.cleanup?.();
   }
 
   const baseResult = {

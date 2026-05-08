@@ -50,6 +50,10 @@ import * as WorktreeManager from "./WorktreeManager.js";
 import { copyToWorktree } from "./CopyToWorktree.js";
 import { resolveCwd } from "./resolveCwd.js";
 import { patchGitMountsForWindows } from "./mountUtils.js";
+import {
+  applyPreparedAgentRuntime,
+  prepareAgentRuntime,
+} from "./AgentPreparation.js";
 
 export interface CreateSandboxOptions {
   /** Explicit branch for the worktree (required). */
@@ -239,6 +243,7 @@ const buildSandboxHandle = (
       const currentHostBranch = await Effect.runPromise(
         WorktreeManager.getCurrentBranch(hostRepoDir),
       );
+      const preparedRuntime = await prepareAgentRuntime(provider, hostRepoDir);
 
       const displayRef = Ref.unsafeMake<ReadonlyArray<DisplayEntry>>([]);
       const silentDisplayLayer = SilentDisplay.layer(displayRef);
@@ -287,7 +292,7 @@ const buildSandboxHandle = (
                 NodeFileSystem.layer,
               );
             })()
-          : silentDisplayLayer;
+          : ClackDisplay.layer;
 
       const reuseFactoryLayer = Layer.succeed(SandboxFactory, {
         withSandbox: (makeEffect) =>
@@ -332,6 +337,7 @@ const buildSandboxHandle = (
               completionSignal: runOptions.completionSignal,
               idleTimeoutSeconds: runOptions.idleTimeoutSeconds,
               name: runOptions.name,
+              preparedRuntime,
               signal: runOptions.signal,
               skipPromptExpansion: isInlinePrompt,
             });
@@ -341,6 +347,8 @@ const buildSandboxHandle = (
         // If the signal was aborted, surface its reason verbatim
         runOptions.signal?.throwIfAborted();
         throw error;
+      } finally {
+        await preparedRuntime?.cleanup?.();
       }
 
       return {
@@ -375,6 +383,7 @@ const buildSandboxHandle = (
       }
       const interactiveExecFn =
         providerHandle.interactiveExec.bind(providerHandle);
+      const preparedRuntime = await prepareAgentRuntime(provider, hostRepoDir);
 
       let lifecycleResult;
       try {
@@ -421,11 +430,24 @@ const buildSandboxHandle = (
                 Effect.gen(function* () {
                   const fullPrompt = isInlinePrompt
                     ? resolvedPrompt
-                    : yield* preprocessPrompt(
-                        resolvedPrompt,
-                        ctx.sandbox,
-                        ctx.sandboxRepoDir,
-                      );
+                    : yield* Effect.gen(function* () {
+                        yield* applyPreparedAgentRuntime(
+                          preparedRuntime,
+                          ctx.sandbox,
+                        );
+                        return yield* preprocessPrompt(
+                          resolvedPrompt,
+                          ctx.sandbox,
+                          ctx.sandboxRepoDir,
+                        );
+                      });
+
+                  if (isInlinePrompt) {
+                    yield* applyPreparedAgentRuntime(
+                      preparedRuntime,
+                      ctx.sandbox,
+                    );
+                  }
 
                   const interactiveArgs = provider.buildInteractiveArgs!({
                     prompt: fullPrompt,
@@ -467,6 +489,9 @@ const buildSandboxHandle = (
                 }),
             );
           }).pipe(
+            Effect.ensuring(
+              Effect.promise(() => preparedRuntime?.cleanup?.() ?? Promise.resolve()),
+            ),
             Effect.provide(sandboxLayer),
             Effect.provide(ClackDisplay.layer),
             Effect.provide(NodeContext.layer),

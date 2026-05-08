@@ -42,6 +42,10 @@ import { noSandbox } from "./sandboxes/no-sandbox.js";
 import { raceAbortSignal } from "./raceAbortSignal.js";
 import { resolveCwd } from "./resolveCwd.js";
 import type { Timeouts } from "./run.js";
+import {
+  applyPreparedAgentRuntime,
+  prepareAgentRuntime,
+} from "./AgentPreparation.js";
 
 export interface InteractiveOptions {
   /** Agent provider to use (e.g. claudeCode("claude-opus-4-6")) */
@@ -162,92 +166,94 @@ export const interactive = async (
   const inner = Effect.gen(function* () {
     const hostRepoDir = yield* resolveCwd(options.cwd);
     const d = yield* Display;
+    const preparedRuntime = yield* Effect.promise(() =>
+      prepareAgentRuntime(provider, hostRepoDir),
+    );
+    return yield* Effect.gen(function* () {
+      // 1. Resolve prompt (from string or file), or skip if neither provided
+      const hasPromptSource = prompt !== undefined || promptFile !== undefined;
+      const resolved = hasPromptSource
+        ? yield* resolvePrompt({ prompt, promptFile })
+        : undefined;
+      const rawPrompt = resolved?.text ?? "";
+      const isInlinePrompt = resolved?.source === "inline";
 
-    // 1. Resolve prompt (from string or file), or skip if neither provided
-    const hasPromptSource = prompt !== undefined || promptFile !== undefined;
-    const resolved = hasPromptSource
-      ? yield* resolvePrompt({ prompt, promptFile })
-      : undefined;
-    const rawPrompt = resolved?.text ?? "";
-    const isInlinePrompt = resolved?.source === "inline";
+      // 2. Resolve env vars
+      const resolvedEnv = yield* resolveEnv(hostRepoDir);
+      const env = mergeProviderEnv({
+        resolvedEnv,
+        agentProviderEnv: {
+          ...provider.env,
+          ...(preparedRuntime?.env ?? {}),
+        },
+        sandboxProviderEnv: sandboxProvider.env,
+      });
+      const effectiveEnv = { ...env, ...(options.env ?? {}) };
 
-    // 2. Resolve env vars
-    const resolvedEnv = yield* resolveEnv(hostRepoDir);
-    const env = mergeProviderEnv({
-      resolvedEnv,
-      agentProviderEnv: provider.env,
-      sandboxProviderEnv: sandboxProvider.env,
-    });
-    const effectiveEnv = { ...env, ...(options.env ?? {}) };
+      // 3. Capture host's current branch
+      const currentHostBranch = yield* getCurrentBranch(hostRepoDir);
 
-    // 3. Capture host's current branch
-    const currentHostBranch = yield* getCurrentBranch(hostRepoDir);
+      const resolvedBranch =
+        branchStrategy.type === "head"
+          ? currentHostBranch
+          : (branch ?? generateTempBranchName(options.name));
 
-    const resolvedBranch =
-      branchStrategy.type === "head"
-        ? currentHostBranch
-        : (branch ?? generateTempBranchName(options.name));
+      // 4. Validate prompt args and collect missing ones interactively (skip when no prompt).
+      // Inline prompts pass through literally — skip scanning, substitution, and built-in args.
+      let substitutedPrompt = rawPrompt;
+      if (hasPromptSource && !isInlinePrompt) {
+        const userArgs = options.promptArgs ?? {};
+        yield* validateNoBuiltInArgOverride(userArgs);
 
-    // 4. Validate prompt args and collect missing ones interactively (skip when no prompt).
-    // Inline prompts pass through literally — skip scanning, substitution, and built-in args.
-    let substitutedPrompt = rawPrompt;
-    if (hasPromptSource && !isInlinePrompt) {
-      const userArgs = options.promptArgs ?? {};
-      yield* validateNoBuiltInArgOverride(userArgs);
-
-      // Scan for missing keys and prompt the user for each one
-      const missingKeys = findMissingPromptArgKeys(rawPrompt, userArgs);
-      const collectedArgs: Record<string, string> = {};
-      for (const key of missingKeys) {
-        const value = yield* Effect.promise(() =>
-          clack.text({
-            message: `Enter value for {{${key}}}`,
-            validate: (v) => {
-              if (!v) return `A value is required for {{${key}}}`;
-            },
-          }),
-        );
-        if (clack.isCancel(value)) {
-          clack.cancel("Prompt arg collection cancelled.");
-          return yield* Effect.fail(
-            new Error("User cancelled prompt arg collection"),
+        const missingKeys = findMissingPromptArgKeys(rawPrompt, userArgs);
+        const collectedArgs: Record<string, string> = {};
+        for (const key of missingKeys) {
+          const value = yield* Effect.promise(() =>
+            clack.text({
+              message: `Enter value for {{${key}}}`,
+              validate: (v) => {
+                if (!v) return `A value is required for {{${key}}}`;
+              },
+            }),
           );
+          if (clack.isCancel(value)) {
+            clack.cancel("Prompt arg collection cancelled.");
+            return yield* Effect.fail(
+              new Error("User cancelled prompt arg collection"),
+            );
+          }
+          collectedArgs[key] = value;
         }
-        collectedArgs[key] = value;
+
+        const mergedUserArgs = { ...userArgs, ...collectedArgs };
+        const effectiveArgs = {
+          SOURCE_BRANCH: resolvedBranch,
+          TARGET_BRANCH: currentHostBranch,
+          ...mergedUserArgs,
+        };
+        const builtInArgKeysSet = new Set<string>(BUILT_IN_PROMPT_ARG_KEYS);
+        substitutedPrompt = yield* substitutePromptArgs(
+          rawPrompt,
+          effectiveArgs,
+          builtInArgKeysSet,
+        );
+      } else if (isInlinePrompt) {
+        const userArgs = options.promptArgs ?? {};
+        yield* validateNoArgsWithInlinePrompt(userArgs);
       }
 
-      const mergedUserArgs = { ...userArgs, ...collectedArgs };
-      const effectiveArgs = {
-        SOURCE_BRANCH: resolvedBranch,
-        TARGET_BRANCH: currentHostBranch,
-        ...mergedUserArgs,
-      };
-      const builtInArgKeysSet = new Set<string>(BUILT_IN_PROMPT_ARG_KEYS);
-      substitutedPrompt = yield* substitutePromptArgs(
-        rawPrompt,
-        effectiveArgs,
-        builtInArgKeysSet,
-      );
-    } else if (isInlinePrompt) {
-      const userArgs = options.promptArgs ?? {};
-      yield* validateNoArgsWithInlinePrompt(userArgs);
-    }
+      const lifecycleBranch = isHeadMode ? currentHostBranch : branch;
 
-    // In head mode, pass the host branch so SandboxLifecycle skips the merge step.
-    const lifecycleBranch = isHeadMode ? currentHostBranch : branch;
+      yield* d.intro(options.name ?? "sandcastle interactive");
+      yield* d.summary("Interactive Session", {
+        Agent: options.name ?? provider.name,
+        Sandbox: sandboxProvider.name,
+        Branch: resolvedBranch,
+      });
 
-    // Display intro and summary
-    yield* d.intro(options.name ?? "sandcastle interactive");
-    yield* d.summary("Interactive Session", {
-      Agent: options.name ?? provider.name,
-      Sandbox: sandboxProvider.name,
-      Branch: resolvedBranch,
-    });
+      let worktreeInfo: WorktreeManager.WorktreeInfo | undefined;
 
-    // 5. Create worktree (unless head mode)
-    let worktreeInfo: WorktreeManager.WorktreeInfo | undefined;
-
-    if (!isHeadMode) {
+      if (!isHeadMode) {
       worktreeInfo = yield* d.taskLog("Creating worktree", () =>
         WorktreeManager.pruneStale(hostRepoDir).pipe(
           Effect.catchAll(() => Effect.void),
@@ -285,13 +291,12 @@ export const interactive = async (
       yield* runHostHooks(hooks.host.onWorktreeReady, hostRepoDir);
     }
 
-    // 6. Start sandbox
-    let handle:
-      | BindMountSandboxHandle
-      | IsolatedSandboxHandle
-      | NoSandboxHandle;
+      let handle:
+        | BindMountSandboxHandle
+        | IsolatedSandboxHandle
+        | NoSandboxHandle;
 
-    if (sandboxProvider.tag === "none") {
+      if (sandboxProvider.tag === "none") {
       // No-sandbox: run directly on the host, no container
       const worktreePath = isHeadMode ? hostRepoDir : worktreeInfo!.path;
       handle = yield* Effect.promise(() =>
@@ -326,8 +331,7 @@ export const interactive = async (
       handle = startResult.handle;
     }
 
-    // Run lifecycle with guaranteed cleanup of handle and worktree
-    return yield* Effect.gen(function* () {
+      return yield* Effect.gen(function* () {
       // Check interactiveExec is available (no-sandbox always has it; bind-mount/isolated it's optional)
       if (!handle.interactiveExec) {
         throw new Error(
@@ -362,11 +366,21 @@ export const interactive = async (
             const fullPrompt =
               !hasPromptSource || isInlinePrompt
                 ? substitutedPrompt
-                : yield* preprocessPrompt(
-                    substitutedPrompt,
-                    ctx.sandbox,
-                    ctx.sandboxRepoDir,
-                  );
+                : yield* Effect.gen(function* () {
+                    yield* applyPreparedAgentRuntime(
+                      preparedRuntime,
+                      ctx.sandbox,
+                    );
+                    return yield* preprocessPrompt(
+                      substitutedPrompt,
+                      ctx.sandbox,
+                      ctx.sandboxRepoDir,
+                    );
+                  });
+
+            if (!hasPromptSource || isInlinePrompt) {
+              yield* applyPreparedAgentRuntime(preparedRuntime, ctx.sandbox);
+            }
 
             // Build interactive args and run the session
             const interactiveArgs = provider.buildInteractiveArgs!({
@@ -430,17 +444,22 @@ export const interactive = async (
         preservedWorktreePath,
         exitCode,
       };
+      }).pipe(
+        Effect.tapError(() =>
+          worktreeInfo
+            ? WorktreeManager.remove(worktreeInfo.path).pipe(
+                Effect.catchAll(() => Effect.void),
+              )
+            : Effect.void,
+        ),
+        Effect.ensuring(
+          Effect.promise(() => handle.close().catch(() => {})),
+        ),
+      );
     }).pipe(
-      // On error, always clean up worktree (on success, handled above with preserve check)
-      Effect.tapError(() =>
-        worktreeInfo
-          ? WorktreeManager.remove(worktreeInfo.path).pipe(
-              Effect.catchAll(() => Effect.void),
-            )
-          : Effect.void,
+      Effect.ensuring(
+        Effect.promise(() => preparedRuntime?.cleanup?.() ?? Promise.resolve()),
       ),
-      // Always close sandbox handle
-      Effect.ensuring(Effect.promise(() => handle.close().catch(() => {}))),
     );
   });
 

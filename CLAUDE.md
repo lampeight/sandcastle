@@ -19,3 +19,13 @@ Default canonical labels. Agent provider support is detailed here. See `docs/age
 ### Domain docs
 
 Single-context layout: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+## Local packaging note
+
+This checkout carries a custom Codex auth-rotation patch on branch `codex-auth-rotation`. For a distributable tarball, install the optional Daytona peer dep first, then build and pack locally:
+
+- `npm install -D @daytona/sdk`
+- `npm run build`
+- `NPM_CONFIG_CACHE=/tmp/.npm-cache HUSKY=0 npm pack --ignore-scripts`
+
+The resulting tarball is `ai-hero-sandcastle-0.5.9.tgz`. This custom build enables `codex(..., { authRotation: { enabled: true } })`, which snapshots one host `~/.codex/auth-*.json` identity per sandbox run instead of sharing a single mutable host `auth.json`.

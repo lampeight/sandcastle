@@ -55,9 +55,13 @@ export { claudeCode, codex, opencode, pi } from "./AgentProvider.js";
 export type {
   AgentProvider,
   AgentCommandOptions,
+  AgentPrepareOptions,
   PrintCommand,
+  PreparedAgentRuntime,
+  PreparedSandboxFile,
   ClaudeCodeOptions,
   CodexOptions,
+  CodexAuthRotationOptions,
   OpenCodeOptions,
   PiOptions,
 } from "./AgentProvider.js";

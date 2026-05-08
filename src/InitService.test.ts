@@ -201,6 +201,20 @@ describe("InitService scaffold", () => {
     expect(envExample).not.toContain("GH_TOKEN=");
   });
 
+  it("generates .env.example with GITLAB_TOKEN when backlog manager is gitlab", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      backlogManager: getBacklogManager("gitlab"),
+    });
+
+    const envExample = await readFile(
+      join(dir, ".sandcastle", ".env.example"),
+      "utf-8",
+    );
+    expect(envExample).toContain("GITLAB_TOKEN=");
+    expect(envExample).not.toContain("GH_TOKEN=");
+  });
+
   it("does not scaffold config.json for blank template", async () => {
     const dir = await makeDir();
     await runScaffold(dir);
@@ -764,6 +778,22 @@ describe("InitService scaffold", () => {
     expect(prompt).toContain("gh issue list");
   });
 
+  it("gitlab prompts retain --label Sandcastle even when createLabel is false", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      templateName: "sequential-reviewer",
+      backlogManager: getBacklogManager("gitlab"),
+      createLabel: false,
+    });
+
+    const prompt = await readFile(
+      join(dir, ".sandcastle", "implement-prompt.md"),
+      "utf-8",
+    );
+    expect(prompt).toContain("glab issue list");
+    expect(prompt).toContain("--label ready-for-agent");
+  });
+
   it("scaffolded prompts that lack a runtime TASK_ID do not contain {{TASK_ID}}", async () => {
     // Regression test for #477: the {{TASK_ID}} placeholder inside
     // VIEW_TASK_COMMAND / CLOSE_TASK_COMMAND used to leak into prompts
@@ -1152,10 +1182,11 @@ describe("InitService scaffold", () => {
   // --- Backlog manager ---
 
   describe("Backlog manager registry", () => {
-    it("listBacklogManagers returns github-issues and beads", () => {
+    it("listBacklogManagers returns github-issues, beads, and gitlab", () => {
       const managers = listBacklogManagers();
       expect(managers.some((m) => m.name === "github-issues")).toBe(true);
       expect(managers.some((m) => m.name === "beads")).toBe(true);
+      expect(managers.some((m) => m.name === "gitlab")).toBe(true);
     });
 
     it("getBacklogManager returns github-issues entry with expected templateArgs", () => {
@@ -1200,6 +1231,41 @@ describe("InitService scaffold", () => {
       );
     });
 
+    it("getBacklogManager returns gitlab entry with expected templateArgs", () => {
+      const manager = getBacklogManager("gitlab");
+      expect(manager).toBeDefined();
+      expect(manager!.label).toBe("GitLab Issues");
+      expect(manager!.templateArgs.LIST_TASKS_COMMAND).toContain(
+        "glab issue list",
+      );
+      expect(manager!.templateArgs.LIST_TASKS_COMMAND).toContain(
+        'git remote get-url origin',
+      );
+      expect(manager!.templateArgs.LIST_TASKS_COMMAND).toContain(
+        "--label ready-for-agent",
+      );
+      expect(manager!.templateArgs.VIEW_TASK_COMMAND).toContain(
+        "glab issue view",
+      );
+      expect(manager!.templateArgs.VIEW_TASK_COMMAND).toContain(
+        'git remote get-url origin',
+      );
+      expect(manager!.templateArgs.CLOSE_TASK_COMMAND).toContain(
+        "glab issue note -R",
+      );
+      expect(manager!.templateArgs.CLOSE_TASK_COMMAND).toContain(
+        "glab issue close -R",
+      );
+      expect(manager!.templateArgs.CLOSE_TASK_COMMAND).toContain(
+        'git remote get-url origin',
+      );
+      expect(manager!.templateArgs.BACKLOG_MANAGER_TOOLS).toContain(
+        "GitLab CLI",
+      );
+      expect(manager!.templateArgs.BACKLOG_MANAGER_TOOLS).toContain("glab");
+      expect(manager!.envExample).toContain("GITLAB_TOKEN=");
+    });
+
     it("getBacklogManager returns undefined for unknown manager", () => {
       expect(getBacklogManager("nonexistent")).toBeUndefined();
     });
@@ -1240,6 +1306,24 @@ describe("InitService scaffold", () => {
       expect(prompt).toContain("bd close");
       expect(prompt).not.toContain("gh issue list");
       expect(prompt).not.toContain("gh issue close");
+      expect(prompt).not.toContain("{{LIST_TASKS_COMMAND}}");
+      expect(prompt).not.toContain("{{CLOSE_TASK_COMMAND}}");
+    });
+
+    it("simple-loop with gitlab produces prompt with glab issue commands", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, {
+        templateName: "simple-loop",
+        backlogManager: getBacklogManager("gitlab"),
+      });
+
+      const prompt = await readFile(
+        join(dir, ".sandcastle", "prompt.md"),
+        "utf-8",
+      );
+      expect(prompt).toContain("glab issue list");
+      expect(prompt).toContain("glab issue note");
+      expect(prompt).toContain("glab issue close");
       expect(prompt).not.toContain("{{LIST_TASKS_COMMAND}}");
       expect(prompt).not.toContain("{{CLOSE_TASK_COMMAND}}");
     });
@@ -1739,6 +1823,27 @@ describe("InitService scaffold", () => {
       expect(dockerfile).not.toContain("{{BACKLOG_MANAGER_TOOLS}}");
       expect(dockerfile).not.toContain("x86_64-linux-gnu");
       expect(dockerfile).toContain("dpkg-architecture -qDEB_HOST_MULTIARCH");
+    });
+
+    it("scaffold with gitlab produces Dockerfile with GitLab CLI install", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, {
+        backlogManager: getBacklogManager("gitlab"),
+      });
+
+      const dockerfile = await readFile(
+        join(dir, ".sandcastle", "Dockerfile"),
+        "utf-8",
+      );
+      expect(dockerfile).toContain("ripgrep");
+      expect(dockerfile).toContain("GitLab CLI");
+      expect(dockerfile).toContain(
+        "https://gitlab.com/api/v4/projects/34675721/releases/permalink/latest",
+      );
+      expect(dockerfile).toContain('endswith("linux_amd64.deb")');
+      expect(dockerfile).toContain("apt-get install -y /tmp/glab.deb");
+      expect(dockerfile).not.toContain("GitHub CLI");
+      expect(dockerfile).not.toContain("{{BACKLOG_MANAGER_TOOLS}}");
     });
 
     it("scaffold with beads + podman produces Containerfile with beads install", async () => {

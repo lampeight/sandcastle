@@ -2280,6 +2280,52 @@ describe("Orchestrator Display integration", () => {
     ).toBe(true);
   });
 
+  it("logs prepared runtime metadata before the agent starts", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-runtime-meta-"));
+
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    const ref = Ref.unsafeMake<ReadonlyArray<DisplayEntry>>([]);
+    const displayLayer = Layer.merge(
+      SilentDisplay.layer(ref),
+      noopAgentStreamEmitterLayer,
+    );
+
+    const { factoryLayer, sandboxRepoDir } = makeTestSandboxFactory(
+      hostDir,
+      (dir) => makeMockAgentLayer(dir, async () => "Done."),
+    );
+
+    await Effect.runPromise(
+      orchestrate({
+        provider: testProvider,
+        hostRepoDir: hostDir,
+        iterations: 1,
+        prompt: "do some work",
+        preparedRuntime: { logMessages: ["Codex auth user: Will Tonna (will)"] },
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(factoryLayer, displayLayer, defaultSessionPathsLayer),
+        ),
+      ),
+    );
+
+    const entries = await Effect.runPromise(Ref.get(ref));
+    const statusEntries = entries.filter((e) => e._tag === "status");
+    expect(
+      statusEntries.some((e) => e.message.includes("Preparing agent runtime")),
+    ).toBe(true);
+    expect(
+      statusEntries.some((e) =>
+        e.message.includes("Codex auth user: Will Tonna (will)"),
+      ),
+    ).toBe(true);
+    expect(statusEntries.some((e) => e.message.includes("Agent started"))).toBe(
+      true,
+    );
+  });
+
   it("uses 10 minutes as the default idle timeout", async () => {
     const hostDir = await mkdtemp(join(tmpdir(), "orch-timeout-default-"));
 

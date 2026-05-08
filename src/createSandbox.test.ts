@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { Effect, Layer } from "effect";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { claudeCode, pi } from "./AgentProvider.js";
 import { createSandbox, type CreateSandboxOptions } from "./createSandbox.js";
 import { Sandbox } from "./SandboxFactory.js";
@@ -29,6 +29,10 @@ const testSandbox = createBindMountSandboxProvider({
 });
 
 const execAsync = promisify(exec);
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 const initRepo = async (dir: string) => {
   await execAsync("git init -b main", { cwd: dir });
@@ -232,6 +236,41 @@ describe("createSandbox", () => {
       expect(result.iterations.length).toBe(1);
       expect(typeof result.stdout).toBe("string");
       expect(Array.isArray(result.commits)).toBe(true);
+    } finally {
+      await sandbox.close();
+      await rm(hostDir, { recursive: true, force: true });
+    }
+  });
+
+  it("sandbox.run() uses terminal display when logging.type is stdout", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "sandbox-test-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "init.txt", "init", "initial commit");
+
+    const clack = await import("@clack/prompts");
+    const messageSpy = vi.spyOn(clack.log, "message").mockImplementation(() => {});
+
+    const sandbox = await createSandbox({
+      branch: "test-stdout-logging",
+      sandbox: testSandbox,
+      cwd: hostDir,
+      _test: {
+        buildSandboxLayer: (sandboxDir) =>
+          makeMockAgentLayer(sandboxDir, async () => "agent output"),
+      },
+    });
+
+    try {
+      const result = await sandbox.run({
+        agent: testProvider,
+        prompt: "do something",
+        maxIterations: 1,
+        logging: { type: "stdout" },
+        name: "implementer",
+      });
+
+      expect(result.logFilePath).toBeUndefined();
+      expect(messageSpy).toHaveBeenCalledWith("agent output");
     } finally {
       await sandbox.close();
       await rm(hostDir, { recursive: true, force: true });
