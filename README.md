@@ -47,7 +47,7 @@ an npm alias so generated templates can keep the vanilla import path:
 ```json
 {
   "devDependencies": {
-    "@ai-hero/sandcastle": "npm:@lampeight/sandcastle@0.5.10-lampeight.1",
+    "@ai-hero/sandcastle": "npm:@lampeight/sandcastle@0.5.10-lampeight.2",
     "tsx": "^4.21.0"
   }
 }

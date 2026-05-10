@@ -1,6 +1,6 @@
 {
   "name": "@lampeight/sandcastle",
-  "version": "0.5.10-lampeight.1",
+  "version": "0.5.10-lampeight.2",
   "description": "CLI for orchestrating AI agents in isolated sandbox environments",
   "type": "module",
   "main": "./dist/index.js",

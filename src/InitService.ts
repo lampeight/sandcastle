@@ -953,7 +953,7 @@ export const scaffold = (
         ? "ready-for-agent"
         : "Sandcastle",
       writePackageJson = false,
-      sandcastlePackage = "npm:@lampeight/sandcastle@0.5.10-lampeight.1",
+      sandcastlePackage = "npm:@lampeight/sandcastle@0.5.10-lampeight.2",
     } = options;
     const fs = yield* FileSystem.FileSystem;
     const configDir = join(repoDir, ".sandcastle");

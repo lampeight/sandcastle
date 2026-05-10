@@ -2078,7 +2078,7 @@ describe("InitService scaffold", () => {
 
       expect(pkg.scripts?.sandcastle).toBe("tsx .sandcastle/main.mts");
       expect(pkg.devDependencies?.["@ai-hero/sandcastle"]).toBe(
-        "npm:@lampeight/sandcastle@0.5.10-lampeight.1",
+        "npm:@lampeight/sandcastle@0.5.10-lampeight.2",
       );
       expect(pkg.devDependencies?.tsx).toBe("^4.21.0");
       expect(gitignore).toContain(".sandcastle/.env");
