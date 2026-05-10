@@ -1,0 +1,4 @@
+{
+  "name": "prd-campaign",
+  "description": "Runs a PRD campaign with implementer, reviewer, and final handoff phases"
+}

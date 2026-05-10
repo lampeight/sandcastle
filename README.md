@@ -39,6 +39,48 @@ npm install --save-dev @ai-hero/sandcastle
 npx sandcastle init
 ```
 
+### Lampeight private fork
+
+This fork is published as `@lampeight/sandcastle` and is usually installed via
+an npm alias so generated templates can keep the vanilla import path:
+
+```json
+{
+  "devDependencies": {
+    "@ai-hero/sandcastle": "npm:@lampeight/sandcastle@0.5.9-lampeight.1",
+    "tsx": "^4.21.0"
+  }
+}
+```
+
+For GitHub Packages, configure auth before installing:
+
+```ini
+@lampeight:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GITHUB_PACKAGES_TOKEN}
+```
+
+Replicable Python/uv PRD campaign setup:
+
+```bash
+npx sandcastle init \
+  --template prd-campaign \
+  --agent codex \
+  --model gpt-5.4-mini \
+  --sandbox-provider docker \
+  --backlog-manager github-issues \
+  --profile python-uv \
+  --repo lampeight/rockbox-manager \
+  --ready-label ready-for-agent \
+  --no-create-label \
+  --no-build \
+  --write-package-json
+```
+
+Use `--backlog-manager gitlab` plus `GITLAB_REPO`/`GITLAB_TOKEN` for GitLab
+projects. The `prd-campaign` template is tracker-agnostic; issue commands come
+from the selected backlog manager.
+
 3. Edit `.sandcastle/.env` and fill in your default values for `ANTHROPIC_API_KEY`. If you want to use your Claude subscription instead of an API key, see [#191](https://github.com/mattpocock/sandcastle/issues/191).
 
 ```bash

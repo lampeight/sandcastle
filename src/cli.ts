@@ -22,12 +22,15 @@ import {
   getBacklogManager,
   listSandboxProviders,
   getSandboxProvider,
+  listProjectProfiles,
+  getProjectProfile,
   getNextStepsLines,
 } from "./InitService.js";
 import { defaultImageName } from "./sandboxes/docker.js";
 import type {
   AgentEntry,
   BacklogManagerEntry,
+  ProjectProfileEntry,
   SandboxProviderEntry,
 } from "./InitService.js";
 import { ConfigDirError, InitError } from "./errors.js";
@@ -101,6 +104,55 @@ const initModelOption = Options.text("model").pipe(
   Options.optional,
 );
 
+const sandboxProviderOption = Options.text("sandbox-provider").pipe(
+  Options.withDescription("Sandbox provider to use (e.g. docker, podman)"),
+  Options.optional,
+);
+
+const backlogManagerOption = Options.text("backlog-manager").pipe(
+  Options.withDescription(
+    "Backlog manager to use (e.g. github-issues, gitlab, beads)",
+  ),
+  Options.optional,
+);
+
+const projectProfileOption = Options.text("profile").pipe(
+  Options.withDescription(
+    "Project profile to scaffold (e.g. python-uv, node-npm, generic)",
+  ),
+  Options.optional,
+);
+
+const repoOption = Options.text("repo").pipe(
+  Options.withDescription(
+    "Repository identifier used by generated issue commands",
+  ),
+  Options.optional,
+);
+
+const readyLabelOption = Options.text("ready-label").pipe(
+  Options.withDescription(
+    "Label used to find ready child issues for PRD campaign templates",
+  ),
+  Options.optional,
+);
+
+const noBuildOption = Options.boolean("no-build").pipe(
+  Options.withDescription(
+    "Skip the image build prompt and do not build the image",
+  ),
+);
+
+const writePackageJsonOption = Options.boolean("write-package-json").pipe(
+  Options.withDescription(
+    "Create or update package.json with Sandcastle script and dev dependencies",
+  ),
+);
+
+const noCreateLabelOption = Options.boolean("no-create-label").pipe(
+  Options.withDescription("Skip GitHub label creation during init"),
+);
+
 const initCommand = Command.make(
   "init",
   {
@@ -108,12 +160,28 @@ const initCommand = Command.make(
     template: templateOption,
     agent: agentOption,
     model: initModelOption,
+    sandboxProvider: sandboxProviderOption,
+    backlogManager: backlogManagerOption,
+    profile: projectProfileOption,
+    repo: repoOption,
+    readyLabel: readyLabelOption,
+    noBuild: noBuildOption,
+    writePackageJson: writePackageJsonOption,
+    noCreateLabel: noCreateLabelOption,
   },
   ({
     imageName: imageNameFlag,
     template,
     agent: agentFlag,
     model: modelFlag,
+    sandboxProvider: sandboxProviderFlag,
+    backlogManager: backlogManagerFlag,
+    profile: profileFlag,
+    repo: repoFlag,
+    readyLabel: readyLabelFlag,
+    noBuild,
+    writePackageJson,
+    noCreateLabel,
   }) =>
     Effect.gen(function* () {
       const d = yield* Display;
@@ -174,10 +242,21 @@ const initCommand = Command.make(
           ? modelFlag.value
           : selectedAgent.defaultModel;
 
-      // Resolve sandbox provider: interactive select (no default — user must choose)
+      // Resolve sandbox provider: CLI flag > interactive select
       const sandboxProviders = listSandboxProviders();
       let selectedSandboxProvider: SandboxProviderEntry;
-      {
+      if (sandboxProviderFlag._tag === "Some") {
+        const entry = getSandboxProvider(sandboxProviderFlag.value);
+        if (!entry) {
+          const names = sandboxProviders.map((p) => p.name).join(", ");
+          yield* Effect.fail(
+            new InitError({
+              message: `Unknown sandbox provider "${sandboxProviderFlag.value}". Available: ${names}`,
+            }),
+          );
+        }
+        selectedSandboxProvider = entry!;
+      } else {
         const selected = yield* Effect.promise(() =>
           clack.select({
             message: "Select a sandbox provider:",
@@ -197,10 +276,21 @@ const initCommand = Command.make(
         selectedSandboxProvider = getSandboxProvider(selected as string)!;
       }
 
-      // Resolve backlog manager: interactive select
+      // Resolve backlog manager: CLI flag > interactive select
       const backlogManagers = listBacklogManagers();
       let selectedBacklogManager: BacklogManagerEntry;
-      {
+      if (backlogManagerFlag._tag === "Some") {
+        const entry = getBacklogManager(backlogManagerFlag.value);
+        if (!entry) {
+          const names = backlogManagers.map((b) => b.name).join(", ");
+          yield* Effect.fail(
+            new InitError({
+              message: `Unknown backlog manager "${backlogManagerFlag.value}". Available: ${names}`,
+            }),
+          );
+        }
+        selectedBacklogManager = entry!;
+      } else {
         const selected = yield* Effect.promise(() =>
           clack.select({
             message: "Select a backlog manager:",
@@ -219,6 +309,41 @@ const initCommand = Command.make(
           );
         }
         selectedBacklogManager = getBacklogManager(selected as string)!;
+      }
+
+      // Resolve project profile: CLI flag > interactive select
+      const projectProfiles = listProjectProfiles();
+      let selectedProjectProfile: ProjectProfileEntry;
+      if (profileFlag._tag === "Some") {
+        const entry = getProjectProfile(profileFlag.value);
+        if (!entry) {
+          const names = projectProfiles.map((p) => p.name).join(", ");
+          yield* Effect.fail(
+            new InitError({
+              message: `Unknown profile "${profileFlag.value}". Available: ${names}`,
+            }),
+          );
+        }
+        selectedProjectProfile = entry!;
+      } else {
+        const selected = yield* Effect.promise(() =>
+          clack.select({
+            message: "Select a project profile:",
+            initialValue: "node-npm",
+            options: projectProfiles.map((p) => ({
+              value: p.name,
+              label: p.label,
+            })),
+          }),
+        );
+        if (clack.isCancel(selected)) {
+          yield* Effect.fail(
+            new InitError({
+              message: "Project profile selection cancelled.",
+            }),
+          );
+        }
+        selectedProjectProfile = getProjectProfile(selected as string)!;
       }
 
       // Resolve template: CLI flag > interactive select (already validated above)
@@ -247,7 +372,7 @@ const initCommand = Command.make(
 
       // Offer to create the "Sandcastle" label on the repo (skip for non-GitHub backlog managers)
       let shouldCreateLabel: boolean | symbol = false;
-      if (selectedBacklogManager.name === "github-issues") {
+      if (selectedBacklogManager.name === "github-issues" && !noCreateLabel) {
         shouldCreateLabel = yield* Effect.promise(() =>
           clack.confirm({
             message:
@@ -277,6 +402,11 @@ const initCommand = Command.make(
           createLabel: shouldCreateLabel === true,
           backlogManager: selectedBacklogManager,
           sandboxProvider: selectedSandboxProvider,
+          projectProfile: selectedProjectProfile,
+          repo: repoFlag._tag === "Some" ? repoFlag.value : undefined,
+          readyLabel:
+            readyLabelFlag._tag === "Some" ? readyLabelFlag.value : undefined,
+          writePackageJson,
         }).pipe(
           Effect.mapError(
             (e) =>
@@ -289,12 +419,15 @@ const initCommand = Command.make(
 
       // Prompt user before building image
       const providerLabel = selectedSandboxProvider.label;
-      const shouldBuild = yield* Effect.promise(() =>
-        clack.confirm({
-          message: `Build the default ${providerLabel} image now?`,
-          initialValue: true,
-        }),
-      );
+      const shouldBuild =
+        noBuild === true
+          ? false
+          : yield* Effect.promise(() =>
+              clack.confirm({
+                message: `Build the default ${providerLabel} image now?`,
+                initialValue: true,
+              }),
+            );
 
       if (shouldBuild === true) {
         const containerfileDir = join(cwd, CONFIG_DIR);

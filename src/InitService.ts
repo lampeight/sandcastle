@@ -6,7 +6,15 @@ import { SANDBOX_REPO_DIR } from "./SandboxFactory.js";
 
 const GITIGNORE = `.env
 logs/
+runs/
 worktrees/
+`;
+
+const ROOT_GITIGNORE_BLOCK = `# Sandcastle
+.sandcastle/.env
+.sandcastle/logs/
+.sandcastle/runs/
+.sandcastle/worktrees/
 `;
 
 export interface TemplateMetadata {
@@ -38,6 +46,11 @@ const TEMPLATES: TemplateMetadata[] = [
     description:
       "Plans parallelizable issues, executes with per-branch review, merges",
   },
+  {
+    name: "prd-campaign",
+    description:
+      "Runs a PRD campaign with implementer, reviewer, and final handoff phases",
+  },
 ];
 
 export const listTemplates = (): TemplateMetadata[] => TEMPLATES;
@@ -67,6 +80,8 @@ RUN apt-get update && apt-get install -y \\
   && rm -rf /var/lib/apt/lists/*
 
 {{BACKLOG_MANAGER_TOOLS}}
+
+{{PROFILE_TOOLS}}
 
 # Build-args for UID/GID alignment: sandcastle docker build-image
 # defaults these to the host user's UID/GID so image-built files
@@ -104,6 +119,8 @@ RUN apt-get update && apt-get install -y \\
 
 {{BACKLOG_MANAGER_TOOLS}}
 
+{{PROFILE_TOOLS}}
+
 # Build-args for UID/GID alignment: sandcastle docker build-image
 # defaults these to the host user's UID/GID so image-built files
 # and bind-mounted files share an owner without runtime chown.
@@ -138,6 +155,8 @@ RUN apt-get update && apt-get install -y \\
 
 {{BACKLOG_MANAGER_TOOLS}}
 
+{{PROFILE_TOOLS}}
+
 # Build-args for UID/GID alignment: sandcastle docker build-image
 # defaults these to the host user's UID/GID so image-built files
 # and bind-mounted files share an owner without runtime chown.
@@ -171,6 +190,8 @@ RUN apt-get update && apt-get install -y \\
   && rm -rf /var/lib/apt/lists/*
 
 {{BACKLOG_MANAGER_TOOLS}}
+
+{{PROFILE_TOOLS}}
 
 # Build-args for UID/GID alignment: sandcastle docker build-image
 # defaults these to the host user's UID/GID so image-built files
@@ -243,12 +264,7 @@ export const listAgents = (): AgentEntry[] => AGENT_REGISTRY;
 export interface BacklogManagerEntry {
   readonly name: string;
   readonly label: string;
-  readonly templateArgs: {
-    readonly LIST_TASKS_COMMAND: string;
-    readonly VIEW_TASK_COMMAND: string;
-    readonly CLOSE_TASK_COMMAND: string;
-    readonly BACKLOG_MANAGER_TOOLS: string;
-  };
+  readonly templateArgs: Record<string, string>;
   /** Lines to append to `.env.example` for this backlog manager, or empty string if none needed. */
   readonly envExample: string;
 }
@@ -288,21 +304,36 @@ const BACKLOG_MANAGER_REGISTRY: BacklogManagerEntry[] = [
     name: "github-issues",
     label: "GitHub Issues",
     templateArgs: {
+      REPO_RESOLVER_COMMAND: `repo="\${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"`,
       LIST_TASKS_COMMAND: `gh issue list --state open --label Sandcastle --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`,
       VIEW_TASK_COMMAND: "gh issue view <ID>",
       CLOSE_TASK_COMMAND: `gh issue close <ID> --comment "Completed by Sandcastle"`,
+      VIEW_PRD_COMMAND: `repo="\${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"; gh issue view --repo "$repo" "{{PRD_ID}}" --comments`,
+      LIST_CHILDREN_COMMAND: `repo="\${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"; gh issue list --repo "$repo" --state open --label "{{READY_LABEL}}" --json number,title,body,labels,comments --jq '[.[] | {id: (.number | tostring), title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`,
+      VIEW_CHILD_COMMAND: `repo="\${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"; gh issue view --repo "$repo" "{{TASK_ID}}" --comments`,
+      COMMENT_CHILD_COMMAND: `repo="\${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"; gh issue comment --repo "$repo" "{{TASK_ID}}" --body-file -`,
+      CLOSE_CHILD_COMMAND: `repo="\${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"; gh issue close --repo "$repo" "{{TASK_ID}}" --comment "Accepted by Sandcastle reviewer"`,
       BACKLOG_MANAGER_TOOLS: GITHUB_CLI_TOOLS,
     },
     envExample: `# GitHub personal access token
-GH_TOKEN=`,
+GITHUB_TOKEN=
+GH_TOKEN=
+# GitHub repository in owner/name form. If omitted, Sandcastle falls back to gh repo view.
+GITHUB_REPOSITORY=`,
   },
   {
     name: "beads",
     label: "Beads",
     templateArgs: {
+      REPO_RESOLVER_COMMAND: "",
       LIST_TASKS_COMMAND: "bd ready --json",
       VIEW_TASK_COMMAND: "bd show <ID>",
       CLOSE_TASK_COMMAND: `bd close <ID> "Completed by Sandcastle"`,
+      VIEW_PRD_COMMAND: "bd show {{PRD_ID}}",
+      LIST_CHILDREN_COMMAND: "bd ready --json",
+      VIEW_CHILD_COMMAND: "bd show {{TASK_ID}}",
+      COMMENT_CHILD_COMMAND: "cat >/dev/null",
+      CLOSE_CHILD_COMMAND: `bd close "{{TASK_ID}}" "Accepted by Sandcastle reviewer"`,
       BACKLOG_MANAGER_TOOLS: BEADS_TOOLS,
     },
     envExample: "",
@@ -311,13 +342,21 @@ GH_TOKEN=`,
     name: "gitlab",
     label: "GitLab Issues",
     templateArgs: {
-      LIST_TASKS_COMMAND: `glab issue list -R "$(git remote get-url origin)" --label ready-for-agent -O json -P 100`,
-      VIEW_TASK_COMMAND: `glab issue view -R "$(git remote get-url origin)" <ID>`,
-      CLOSE_TASK_COMMAND: `sh -lc 'repo="$(git remote get-url origin)" && glab issue note -R "$repo" <ID> -m "Completed by Sandcastle" && glab issue close -R "$repo" <ID>'`,
+      REPO_RESOLVER_COMMAND: `repo="\${GITLAB_REPO:-$(git remote get-url origin)}"`,
+      LIST_TASKS_COMMAND: `repo="\${GITLAB_REPO:-$(git remote get-url origin)}"; glab issue list -R "$repo" --label ready-for-agent -O json -P 100`,
+      VIEW_TASK_COMMAND: `repo="\${GITLAB_REPO:-$(git remote get-url origin)}"; glab issue view -R "$repo" <ID>`,
+      CLOSE_TASK_COMMAND: `sh -lc 'repo="\${GITLAB_REPO:-$(git remote get-url origin)}" && glab issue note -R "$repo" <ID> -m "Completed by Sandcastle" && glab issue close -R "$repo" <ID>'`,
+      VIEW_PRD_COMMAND: `repo="\${GITLAB_REPO:-$(git remote get-url origin)}"; glab issue view -R "$repo" "{{PRD_ID}}" --comments`,
+      LIST_CHILDREN_COMMAND: `repo="\${GITLAB_REPO:-$(git remote get-url origin)}"; glab issue list -R "$repo" --label "{{READY_LABEL}}" -O json -P 100`,
+      VIEW_CHILD_COMMAND: `repo="\${GITLAB_REPO:-$(git remote get-url origin)}"; glab issue view -R "$repo" "{{TASK_ID}}" --comments`,
+      COMMENT_CHILD_COMMAND: `repo="\${GITLAB_REPO:-$(git remote get-url origin)}"; glab issue note -R "$repo" "{{TASK_ID}}" -m "$(cat)"`,
+      CLOSE_CHILD_COMMAND: `repo="\${GITLAB_REPO:-$(git remote get-url origin)}"; glab issue note -R "$repo" "{{TASK_ID}}" -m "Accepted by Sandcastle reviewer"; glab issue close -R "$repo" "{{TASK_ID}}"`,
       BACKLOG_MANAGER_TOOLS: GITLAB_CLI_TOOLS,
     },
     envExample: `# GitLab personal access token
-GITLAB_TOKEN=`,
+GITLAB_TOKEN=
+# GitLab repository path. If omitted, Sandcastle falls back to git remote get-url origin.
+GITLAB_REPO=`,
   },
 ];
 
@@ -331,6 +370,77 @@ export const getBacklogManager = (
 
 export const getAgent = (name: string): AgentEntry | undefined =>
   AGENT_REGISTRY.find((a) => a.name === name);
+
+// ---------------------------------------------------------------------------
+// Project profile registry (internal — not part of public API)
+// ---------------------------------------------------------------------------
+
+export interface ProjectProfileEntry {
+  readonly name: string;
+  readonly label: string;
+  readonly templateArgs: Record<string, string>;
+}
+
+const PYTHON_UV_TOOLS = `# Install Python, make, and uv for Python/uv projects
+RUN apt-get update && apt-get install -y \\
+  make \\
+  python3 \\
+  python3-venv \\
+  python3-pip \\
+  python-is-python3 \\
+  && rm -rf /var/lib/apt/lists/*
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+
+ENV PATH="/home/agent/workspace/.venv/bin:/home/agent/.local/bin:\${PATH}"`;
+
+const PROJECT_PROFILE_REGISTRY: ProjectProfileEntry[] = [
+  {
+    name: "node-npm",
+    label: "Node / npm",
+    templateArgs: {
+      PROFILE_NAME: "node-npm",
+      PROFILE_TOOLS: "",
+      SANDBOX_READY_COMMAND: "npm install",
+      COPY_TO_WORKTREE: `["node_modules"]`,
+      TARGETED_VERIFY_COMMAND: "npm run test",
+      BROAD_VERIFY_COMMAND: "npm run test",
+    },
+  },
+  {
+    name: "python-uv",
+    label: "Python / uv",
+    templateArgs: {
+      PROFILE_NAME: "python-uv",
+      PROFILE_TOOLS: PYTHON_UV_TOOLS,
+      SANDBOX_READY_COMMAND:
+        "mkdir -p .cache/uv; export UV_CACHE_DIR=$PWD/.cache/uv; uv sync --frozen --all-extras",
+      COPY_TO_WORKTREE: "[]",
+      TARGETED_VERIFY_COMMAND: "uv run python -m pytest -q",
+      BROAD_VERIFY_COMMAND: "make ci",
+    },
+  },
+  {
+    name: "generic",
+    label: "Generic",
+    templateArgs: {
+      PROFILE_NAME: "generic",
+      PROFILE_TOOLS: "",
+      SANDBOX_READY_COMMAND: "true",
+      COPY_TO_WORKTREE: "[]",
+      TARGETED_VERIFY_COMMAND: "true",
+      BROAD_VERIFY_COMMAND: "true",
+    },
+  },
+];
+
+export const listProjectProfiles = (): ProjectProfileEntry[] =>
+  PROJECT_PROFILE_REGISTRY;
+
+export const getProjectProfile = (
+  name: string,
+): ProjectProfileEntry | undefined =>
+  PROJECT_PROFILE_REGISTRY.find((p) => p.name === name);
 
 // ---------------------------------------------------------------------------
 // Sandbox provider registry (internal — not part of public API)
@@ -376,6 +486,15 @@ export function getNextStepsLines(
   template: string,
   mainFilename: string,
 ): string[] {
+  if (template === "prd-campaign") {
+    return [
+      "Next steps:",
+      "1. Copy .sandcastle/.env.example to .sandcastle/.env and fill required tokens",
+      `2. Add "sandcastle": "tsx .sandcastle/${mainFilename}" to package.json scripts if init did not do it`,
+      `3. Review .sandcastle/README.md and .sandcastle/config.json`,
+      "4. Run `npm run sandcastle -- --prd-id <ID>`",
+    ];
+  }
   if (template === "blank") {
     return [
       "Next steps:",
@@ -513,6 +632,7 @@ const rewriteMainTs = (
       factoryCallRe,
       `${agent.factoryImport}("${model}")`,
     );
+    content = content.replace(/"claude-(opus|sonnet)-4-6"/g, `"${model}"`);
 
     yield* fs
       .writeFileString(mainTsPath, content)
@@ -558,6 +678,9 @@ const TEXT_FILE_EXTENSIONS = new Set([
   ".txt",
   ".env",
   ".example",
+  ".json",
+  ".mts",
+  ".ts",
   // Dockerfile / Containerfile have no extension — handled by name check below
 ]);
 
@@ -579,7 +702,7 @@ const isTextFile = (filename: string): boolean => {
  */
 const substituteTemplateArgs = (
   configDir: string,
-  backlogManager: BacklogManagerEntry,
+  templateArgs: Record<string, string>,
 ): Effect.Effect<void, Error, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -595,9 +718,7 @@ const substituteTemplateArgs = (
             .readFileString(filePath)
             .pipe(Effect.mapError((e) => new Error(e.message)));
           const original = content;
-          for (const [key, value] of Object.entries(
-            backlogManager.templateArgs,
-          )) {
+          for (const [key, value] of Object.entries(templateArgs)) {
             content = content.replace(
               new RegExp(`\\{\\{${key}\\}\\}`, "g"),
               value,
@@ -625,11 +746,162 @@ export interface ScaffoldOptions {
   createLabel?: boolean;
   backlogManager?: BacklogManagerEntry;
   sandboxProvider?: SandboxProviderEntry;
+  projectProfile?: ProjectProfileEntry;
+  repo?: string;
+  readyLabel?: string;
+  writePackageJson?: boolean;
+  sandcastlePackage?: string;
 }
 
 export interface ScaffoldResult {
   mainFilename: string;
 }
+
+const detectRepoSlug = (
+  repoDir: string,
+): Effect.Effect<string, never, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const gitConfigPath = join(repoDir, ".git", "config");
+    const content = yield* fs
+      .readFileString(gitConfigPath)
+      .pipe(Effect.orElseSucceed(() => ""));
+    const match = content.match(
+      /url = (?:git@github\.com:|https:\/\/github\.com\/)([^/\s]+\/[^/\s.]+)(?:\.git)?/,
+    );
+    return match?.[1] ?? "";
+  });
+
+const writeRepoReadme = (
+  configDir: string,
+  options: {
+    templateName: string;
+    profile: ProjectProfileEntry;
+    backlogManager: BacklogManagerEntry;
+    mainFilename: string;
+    readyLabel: string;
+    repo: string;
+  },
+): Effect.Effect<void, Error, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const content = `# Sandcastle
+
+Generated setup.
+
+- Template: \`${options.templateName}\`
+- Profile: \`${options.profile.name}\`
+- Backlog manager: \`${options.backlogManager.name}\`
+- Repository: \`${options.repo || "detected at runtime"}\`
+- Ready label: \`${options.readyLabel}\`
+
+## Run
+
+\`\`\`bash
+npm run sandcastle -- --prd-id <ID>
+\`\`\`
+
+Positional PRD id is also accepted:
+
+\`\`\`bash
+npm run sandcastle -- <ID>
+\`\`\`
+
+## Environment
+
+Copy \`.sandcastle/.env.example\` to \`.sandcastle/.env\` and fill required values.
+Never commit \`.sandcastle/.env\`.
+
+## Artifacts
+
+- Logs: \`.sandcastle/logs/\`
+- Run artifacts: \`.sandcastle/runs/\`
+- Worktrees: \`.sandcastle/worktrees/\`
+
+## Image
+
+\`\`\`bash
+sandcastle ${options.backlogManager.name === "gitlab" ? "docker" : "docker"} build-image
+\`\`\`
+
+## Cleanup
+
+Remove stale campaign worktrees with:
+
+\`\`\`bash
+git worktree list
+git worktree remove --force <path>
+\`\`\`
+`;
+    yield* fs
+      .writeFileString(join(configDir, "README.md"), content)
+      .pipe(Effect.mapError((e) => new Error(e.message)));
+  });
+
+const writeCampaignConfig = (
+  configDir: string,
+  config: Record<string, unknown>,
+): Effect.Effect<void, Error, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs
+      .writeFileString(
+        join(configDir, "config.json"),
+        `${JSON.stringify(config, null, 2)}\n`,
+      )
+      .pipe(Effect.mapError((e) => new Error(e.message)));
+  });
+
+const updateRootGitignore = (
+  repoDir: string,
+): Effect.Effect<void, Error, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = join(repoDir, ".gitignore");
+    const existing = yield* fs
+      .readFileString(path)
+      .pipe(Effect.orElseSucceed(() => ""));
+    if (existing.includes(".sandcastle/.env")) return;
+    const separator = existing.trim() ? "\n\n" : "";
+    yield* fs
+      .writeFileString(path, `${existing}${separator}${ROOT_GITIGNORE_BLOCK}`)
+      .pipe(Effect.mapError((e) => new Error(e.message)));
+  });
+
+const updatePackageJson = (
+  repoDir: string,
+  mainFilename: string,
+  sandcastlePackage: string,
+): Effect.Effect<void, Error, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = join(repoDir, "package.json");
+    const existing = yield* fs
+      .readFileString(path)
+      .pipe(Effect.orElseSucceed(() => ""));
+    let pkg: Record<string, unknown> = {};
+    try {
+      pkg = existing ? (JSON.parse(existing) as Record<string, unknown>) : {};
+    } catch {
+      yield* Effect.fail(new Error("package.json is not valid JSON."));
+    }
+    const scripts =
+      typeof pkg.scripts === "object" && pkg.scripts !== null
+        ? (pkg.scripts as Record<string, unknown>)
+        : {};
+    scripts.sandcastle = `tsx .sandcastle/${mainFilename}`;
+    pkg.scripts = scripts;
+    const devDependencies =
+      typeof pkg.devDependencies === "object" && pkg.devDependencies !== null
+        ? (pkg.devDependencies as Record<string, unknown>)
+        : {};
+    devDependencies["@ai-hero/sandcastle"] = sandcastlePackage;
+    devDependencies.tsx = devDependencies.tsx ?? "^4.21.0";
+    pkg.devDependencies = devDependencies;
+    yield* fs
+      .writeFileString(path, `${JSON.stringify(pkg, null, 2)}\n`)
+      .pipe(Effect.mapError((e) => new Error(e.message)));
+  });
 
 /**
  * Detect whether the project's package.json has `"type": "module"`.
@@ -668,6 +940,13 @@ export const scaffold = (
       createLabel = true,
       backlogManager = BACKLOG_MANAGER_REGISTRY[0]!, // default: github-issues
       sandboxProvider = SANDBOX_PROVIDER_REGISTRY[0]!, // default: docker
+      projectProfile = PROJECT_PROFILE_REGISTRY[0]!, // default: node-npm
+      repo,
+      readyLabel = templateName === "prd-campaign"
+        ? "ready-for-agent"
+        : "Sandcastle",
+      writePackageJson = false,
+      sandcastlePackage = "npm:@lampeight/sandcastle@0.5.9-lampeight.1",
     } = options;
     const fs = yield* FileSystem.FileSystem;
     const configDir = join(repoDir, ".sandcastle");
@@ -690,13 +969,25 @@ export const scaffold = (
       .pipe(Effect.mapError((e) => new Error(e.message)));
 
     const templateDir = yield* getTemplateDir(templateName);
+    const detectedRepo = repo ?? (yield* detectRepoSlug(repoDir));
+    const templateArgs = {
+      ...backlogManager.templateArgs,
+      ...projectProfile.templateArgs,
+      REPO: detectedRepo,
+      READY_LABEL: readyLabel,
+    };
 
     // Build .env.example from agent + backlog manager env blocks
     const envExampleParts = [agent.envExample];
     if (backlogManager.envExample) {
       envExampleParts.push(backlogManager.envExample);
     }
-    const envExampleContent = envExampleParts.join("\n") + "\n";
+    let envExampleContent = envExampleParts.join("\n") + "\n";
+    if (detectedRepo) {
+      envExampleContent = envExampleContent
+        .replace("GITHUB_REPOSITORY=", `GITHUB_REPOSITORY=${detectedRepo}`)
+        .replace("GITLAB_REPO=", `GITLAB_REPO=${detectedRepo}`);
+    }
 
     yield* Effect.all(
       [
@@ -721,12 +1012,38 @@ export const scaffold = (
     yield* rewriteMainTs(configDir, agent, model, mainFilename);
 
     // Replace backlog manager template arguments in all text files (must run before label stripping)
-    yield* substituteTemplateArgs(configDir, backlogManager);
+    yield* substituteTemplateArgs(configDir, templateArgs);
+
+    yield* writeRepoReadme(configDir, {
+      templateName,
+      profile: projectProfile,
+      backlogManager,
+      mainFilename,
+      readyLabel,
+      repo: detectedRepo,
+    });
+
+    if (templateName === "prd-campaign") {
+      yield* writeCampaignConfig(configDir, {
+        template: templateName,
+        profile: projectProfile.name,
+        backlogManager: backlogManager.name,
+        repo: detectedRepo,
+        readyLabel,
+        main: mainFilename,
+      });
+    }
 
     // Strip --label Sandcastle from prompt files only for GitHub issue scaffolds
     // when the user explicitly declined label creation.
     if (!createLabel && backlogManager.name === "github-issues") {
       yield* rewritePromptFiles(configDir);
+    }
+
+    yield* updateRootGitignore(repoDir);
+
+    if (writePackageJson) {
+      yield* updatePackageJson(repoDir, mainFilename, sandcastlePackage);
     }
 
     return { mainFilename };

@@ -3,6 +3,11 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "paths": {
+      "@ai-hero/sandcastle": ["./src/index.ts"],
+      "@ai-hero/sandcastle/sandboxes/*": ["./src/sandboxes/*.ts"],
+      "@ai-hero/sandcastle/*": ["./src/*"]
+    },
     "lib": ["ES2022"],
     "types": ["node"],
     "outDir": "./dist",

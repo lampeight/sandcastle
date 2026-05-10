@@ -12,6 +12,8 @@ import {
   listTemplates,
   listBacklogManagers,
   getBacklogManager,
+  listProjectProfiles,
+  getProjectProfile,
   listSandboxProviders,
   getSandboxProvider,
 } from "./InitService.js";
@@ -1239,7 +1241,7 @@ describe("InitService scaffold", () => {
         "glab issue list",
       );
       expect(manager!.templateArgs.LIST_TASKS_COMMAND).toContain(
-        'git remote get-url origin',
+        "git remote get-url origin",
       );
       expect(manager!.templateArgs.LIST_TASKS_COMMAND).toContain(
         "--label ready-for-agent",
@@ -1248,7 +1250,7 @@ describe("InitService scaffold", () => {
         "glab issue view",
       );
       expect(manager!.templateArgs.VIEW_TASK_COMMAND).toContain(
-        'git remote get-url origin',
+        "git remote get-url origin",
       );
       expect(manager!.templateArgs.CLOSE_TASK_COMMAND).toContain(
         "glab issue note -R",
@@ -1257,7 +1259,7 @@ describe("InitService scaffold", () => {
         "glab issue close -R",
       );
       expect(manager!.templateArgs.CLOSE_TASK_COMMAND).toContain(
-        'git remote get-url origin',
+        "git remote get-url origin",
       );
       expect(manager!.templateArgs.BACKLOG_MANAGER_TOOLS).toContain(
         "GitLab CLI",
@@ -2002,6 +2004,89 @@ describe("InitService scaffold", () => {
   });
 
   // ---------------------------------------------------------------------------
+  // PRD campaign template and project profiles
+  // ---------------------------------------------------------------------------
+
+  describe("prd-campaign template", () => {
+    it("appears in listTemplates()", () => {
+      const templates = listTemplates();
+      expect(templates.some((t) => t.name === "prd-campaign")).toBe(true);
+    });
+
+    it("scaffolds tracker-agnostic campaign files for python-uv + GitHub", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, {
+        templateName: "prd-campaign",
+        agent: codexAgent,
+        model: "gpt-5.4-mini",
+        backlogManager: getBacklogManager("github-issues"),
+        projectProfile: getProjectProfile("python-uv"),
+        repo: "lampeight/rockbox-manager",
+        readyLabel: "ready-for-agent",
+      });
+
+      const configDir = join(dir, ".sandcastle");
+      const main = await readFile(join(configDir, "main.mts"), "utf-8");
+      const implementPrompt = await readFile(
+        join(configDir, "implement-prompt.md"),
+        "utf-8",
+      );
+      const reviewPrompt = await readFile(
+        join(configDir, "review-prompt.md"),
+        "utf-8",
+      );
+      const dockerfile = await readFile(join(configDir, "Dockerfile"), "utf-8");
+      const envExample = await readFile(
+        join(configDir, ".env.example"),
+        "utf-8",
+      );
+      const config = JSON.parse(
+        await readFile(join(configDir, "config.json"), "utf-8"),
+      ) as Record<string, unknown>;
+
+      expect(main).toContain("uv sync --frozen --all-extras");
+      expect(main).toContain("codex(implementModel)");
+      expect(implementPrompt).toContain("gh issue list");
+      expect(implementPrompt).toContain("ready-for-agent");
+      expect(reviewPrompt).toContain("gh issue close");
+      expect(dockerfile).toContain("uv/install.sh");
+      expect(dockerfile).not.toContain("{{PROFILE_TOOLS}}");
+      expect(envExample).toContain(
+        "GITHUB_REPOSITORY=lampeight/rockbox-manager",
+      );
+      expect(config.template).toBe("prd-campaign");
+      expect(config.profile).toBe("python-uv");
+      expect(config.repo).toBe("lampeight/rockbox-manager");
+      expect(config.readyLabel).toBe("ready-for-agent");
+    });
+
+    it("can update package.json and root .gitignore", async () => {
+      const dir = await makeDir();
+      await writeFile(join(dir, ".gitignore"), "node_modules/\n");
+      await runScaffold(dir, {
+        templateName: "prd-campaign",
+        writePackageJson: true,
+      });
+
+      const pkg = JSON.parse(
+        await readFile(join(dir, "package.json"), "utf-8"),
+      ) as {
+        scripts?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
+      const gitignore = await readFile(join(dir, ".gitignore"), "utf-8");
+
+      expect(pkg.scripts?.sandcastle).toBe("tsx .sandcastle/main.mts");
+      expect(pkg.devDependencies?.["@ai-hero/sandcastle"]).toBe(
+        "npm:@lampeight/sandcastle@0.5.9-lampeight.1",
+      );
+      expect(pkg.devDependencies?.tsx).toBe("^4.21.0");
+      expect(gitignore).toContain(".sandcastle/.env");
+      expect(gitignore).toContain(".sandcastle/runs/");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // Sandbox provider selection
   // ---------------------------------------------------------------------------
 
@@ -2082,5 +2167,29 @@ describe("Sandbox provider registry", () => {
 
   it("getSandboxProvider returns undefined for unknown provider", () => {
     expect(getSandboxProvider("nonexistent")).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Project profile registry
+// ---------------------------------------------------------------------------
+
+describe("Project profile registry", () => {
+  it("listProjectProfiles returns node-npm, python-uv, and generic", () => {
+    const profiles = listProjectProfiles();
+    expect(profiles.some((p) => p.name === "node-npm")).toBe(true);
+    expect(profiles.some((p) => p.name === "python-uv")).toBe(true);
+    expect(profiles.some((p) => p.name === "generic")).toBe(true);
+  });
+
+  it("getProjectProfile returns python-uv entry with uv setup", () => {
+    const profile = getProjectProfile("python-uv");
+    expect(profile).toBeDefined();
+    expect(profile!.templateArgs.PROFILE_TOOLS).toContain("uv/install.sh");
+    expect(profile!.templateArgs.SANDBOX_READY_COMMAND).toContain("uv sync");
+  });
+
+  it("getProjectProfile returns undefined for unknown profile", () => {
+    expect(getProjectProfile("nonexistent")).toBeUndefined();
   });
 });
