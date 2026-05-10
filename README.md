@@ -47,11 +47,15 @@ an npm alias so generated templates can keep the vanilla import path:
 ```json
 {
   "devDependencies": {
-    "@ai-hero/sandcastle": "npm:@lampeight/sandcastle@0.5.9-lampeight.1",
+    "@ai-hero/sandcastle": "npm:@lampeight/sandcastle@0.5.10-lampeight.1",
     "tsx": "^4.21.0"
   }
 }
 ```
+
+For the Codex agent, the generated `prd-campaign` scaffold uses host Codex auth
+by default by snapshotting `~/.codex/auth.json` into the sandbox. You do not
+need `OPENAI_KEY` unless you explicitly want API-key auth instead.
 
 For GitHub Packages, configure auth before installing:
 

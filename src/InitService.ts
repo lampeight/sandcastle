@@ -241,8 +241,9 @@ ANTHROPIC_API_KEY=`,
     defaultModel: "gpt-5.4-mini",
     factoryImport: "codex",
     dockerfileTemplate: CODEX_DOCKERFILE,
-    envExample: `# OpenAI API key
-OPENAI_KEY=`,
+    envExample: `# Codex uses host auth by default.
+# Sandcastle snapshots ~/.codex/auth.json into the sandbox when using the Codex agent.
+# Optional: set OPENAI_KEY only if you explicitly want API-key auth instead of host auth.`,
   },
   {
     name: "opencode",
@@ -633,6 +634,12 @@ const rewriteMainTs = (
       `${agent.factoryImport}("${model}")`,
     );
     content = content.replace(/"claude-(opus|sonnet)-4-6"/g, `"${model}"`);
+    if (agent.name === "codex") {
+      content = content.replace(
+        /codex\(([^,\n]+)\)/g,
+        "codex($1, { hostAuth: true })",
+      );
+    }
 
     yield* fs
       .writeFileString(mainTsPath, content)
@@ -946,7 +953,7 @@ export const scaffold = (
         ? "ready-for-agent"
         : "Sandcastle",
       writePackageJson = false,
-      sandcastlePackage = "npm:@lampeight/sandcastle@0.5.9-lampeight.1",
+      sandcastlePackage = "npm:@lampeight/sandcastle@0.5.10-lampeight.1",
     } = options;
     const fs = yield* FileSystem.FileSystem;
     const configDir = join(repoDir, ".sandcastle");

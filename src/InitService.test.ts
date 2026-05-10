@@ -147,7 +147,7 @@ describe("InitService scaffold", () => {
     },
     {
       agent: codexAgent,
-      expectedKey: "OPENAI_KEY=",
+      expectedKey: "Codex uses host auth by default.",
       unexpectedKey: "ANTHROPIC_API_KEY=",
       expectIssue191Link: false,
     },
@@ -718,7 +718,7 @@ describe("InitService scaffold", () => {
       join(dir, ".sandcastle", "main.mts"),
       "utf-8",
     );
-    expect(mainTs).toContain('codex("gpt-5.4-mini")');
+    expect(mainTs).toContain('codex("gpt-5.4-mini", { hostAuth: true })');
     expect(mainTs).not.toContain("claudeCode");
   });
 
@@ -2045,7 +2045,7 @@ describe("InitService scaffold", () => {
       ) as Record<string, unknown>;
 
       expect(main).toContain("uv sync --frozen --all-extras");
-      expect(main).toContain("codex(implementModel)");
+      expect(main).toContain("codex(implementModel, { hostAuth: true })");
       expect(implementPrompt).toContain("gh issue list");
       expect(implementPrompt).toContain("ready-for-agent");
       expect(reviewPrompt).toContain("gh issue close");
@@ -2078,11 +2078,30 @@ describe("InitService scaffold", () => {
 
       expect(pkg.scripts?.sandcastle).toBe("tsx .sandcastle/main.mts");
       expect(pkg.devDependencies?.["@ai-hero/sandcastle"]).toBe(
-        "npm:@lampeight/sandcastle@0.5.9-lampeight.1",
+        "npm:@lampeight/sandcastle@0.5.10-lampeight.1",
       );
       expect(pkg.devDependencies?.tsx).toBe("^4.21.0");
       expect(gitignore).toContain(".sandcastle/.env");
       expect(gitignore).toContain(".sandcastle/runs/");
+    });
+
+    it("scaffolds prd-campaign codex runs with host auth enabled", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, {
+        templateName: "prd-campaign",
+        agent: codexAgent,
+        model: codexAgent.defaultModel,
+      });
+
+      const main = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+
+      expect(main).toContain(
+        'agent: sandcastle.codex("gpt-5.4-mini", { hostAuth: true })',
+      );
+      expect(main).not.toContain("sandcastle.claudeCode(");
     });
   });
 
