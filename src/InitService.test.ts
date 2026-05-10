@@ -1198,6 +1198,7 @@ describe("InitService scaffold", () => {
       expect(manager!.templateArgs.LIST_TASKS_COMMAND).toContain(
         "gh issue list",
       );
+      expect(manager!.templateArgs.LIST_TASKS_COMMAND).toContain('--jq "[.[]');
       expect(manager!.templateArgs.LIST_TASKS_COMMAND).toContain("labels");
       expect(manager!.templateArgs.LIST_TASKS_COMMAND).toContain("comments");
       expect(manager!.templateArgs.VIEW_TASK_COMMAND).toContain(

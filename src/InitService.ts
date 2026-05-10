@@ -306,11 +306,11 @@ const BACKLOG_MANAGER_REGISTRY: BacklogManagerEntry[] = [
     label: "GitHub Issues",
     templateArgs: {
       REPO_RESOLVER_COMMAND: `repo="\${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"`,
-      LIST_TASKS_COMMAND: `gh issue list --state open --label Sandcastle --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`,
+      LIST_TASKS_COMMAND: `gh issue list --state open --label Sandcastle --json number,title,body,labels,comments --jq "[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]"`,
       VIEW_TASK_COMMAND: "gh issue view <ID>",
       CLOSE_TASK_COMMAND: `gh issue close <ID> --comment "Completed by Sandcastle"`,
       VIEW_PRD_COMMAND: `repo="\${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"; gh issue view --repo "$repo" "{{PRD_ID}}" --comments`,
-      LIST_CHILDREN_COMMAND: `repo="\${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"; gh issue list --repo "$repo" --state open --label "{{READY_LABEL}}" --json number,title,body,labels,comments --jq '[.[] | {id: (.number | tostring), title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`,
+      LIST_CHILDREN_COMMAND: `repo="\${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"; gh issue list --repo "$repo" --state open --label "{{READY_LABEL}}" --json number,title,body,labels,comments --jq "[.[] | {id: (.number | tostring), title, body, labels: [.labels[].name], comments: [.comments[].body]}]"`,
       VIEW_CHILD_COMMAND: `repo="\${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"; gh issue view --repo "$repo" "{{TASK_ID}}" --comments`,
       COMMENT_CHILD_COMMAND: `repo="\${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"; gh issue comment --repo "$repo" "{{TASK_ID}}" --body-file -`,
       CLOSE_CHILD_COMMAND: `repo="\${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"; gh issue close --repo "$repo" "{{TASK_ID}}" --comment "Accepted by Sandcastle reviewer"`,
