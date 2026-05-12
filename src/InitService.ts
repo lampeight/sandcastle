@@ -15,6 +15,7 @@ const ROOT_GITIGNORE_BLOCK = `# Sandcastle
 .sandcastle/logs/
 .sandcastle/runs/
 .sandcastle/worktrees/
+.sandcastle/state/
 `;
 
 export interface TemplateMetadata {
@@ -63,6 +64,7 @@ export interface AgentEntry {
   readonly name: string;
   readonly label: string;
   readonly defaultModel: string;
+  readonly defaultEscalationModel: string;
   readonly factoryImport: string;
   readonly dockerfileTemplate: string;
   /** Lines to include in the generated `.env.example` for this agent's API key. */
@@ -220,6 +222,7 @@ const AGENT_REGISTRY: AgentEntry[] = [
     name: "claude-code",
     label: "Claude Code",
     defaultModel: "claude-opus-4-6",
+    defaultEscalationModel: "claude-opus-4-6",
     factoryImport: "claudeCode",
     dockerfileTemplate: CLAUDE_CODE_DOCKERFILE,
     envExample: `# Anthropic API key
@@ -230,6 +233,7 @@ ANTHROPIC_API_KEY=`,
     name: "pi",
     label: "Pi",
     defaultModel: "claude-sonnet-4-6",
+    defaultEscalationModel: "claude-opus-4-6",
     factoryImport: "pi",
     dockerfileTemplate: PI_DOCKERFILE,
     envExample: `# Anthropic API key
@@ -239,6 +243,7 @@ ANTHROPIC_API_KEY=`,
     name: "codex",
     label: "Codex",
     defaultModel: "gpt-5.4-mini",
+    defaultEscalationModel: "gpt-5.5",
     factoryImport: "codex",
     dockerfileTemplate: CODEX_DOCKERFILE,
     envExample: `# Codex uses host auth by default.
@@ -249,6 +254,7 @@ ANTHROPIC_API_KEY=`,
     name: "opencode",
     label: "OpenCode",
     defaultModel: "opencode/big-pickle",
+    defaultEscalationModel: "opencode/big-pickle",
     factoryImport: "opencode",
     dockerfileTemplate: OPENCODE_DOCKERFILE,
     envExample: `# OpenCode API key
@@ -749,6 +755,7 @@ const substituteTemplateArgs = (
 export interface ScaffoldOptions {
   agent: AgentEntry;
   model: string;
+  escalationModel?: string;
   templateName?: string;
   createLabel?: boolean;
   backlogManager?: BacklogManagerEntry;
@@ -949,6 +956,7 @@ export const scaffold = (
       sandboxProvider = SANDBOX_PROVIDER_REGISTRY[0]!, // default: docker
       projectProfile = PROJECT_PROFILE_REGISTRY[0]!, // default: node-npm
       repo,
+      escalationModel,
       readyLabel = templateName === "prd-campaign"
         ? "ready-for-agent"
         : "Sandcastle",
@@ -957,6 +965,8 @@ export const scaffold = (
     } = options;
     const fs = yield* FileSystem.FileSystem;
     const configDir = join(repoDir, ".sandcastle");
+    const resolvedEscalationModel =
+      escalationModel ?? agent.defaultEscalationModel;
 
     const exists = yield* fs
       .exists(configDir)
@@ -1037,6 +1047,12 @@ export const scaffold = (
         backlogManager: backlogManager.name,
         repo: detectedRepo,
         readyLabel,
+        model,
+        escalationModel: resolvedEscalationModel,
+        reviewModel: resolvedEscalationModel,
+        usageLimitExit: {
+          enabled: true,
+        },
         main: mainFilename,
       });
     }

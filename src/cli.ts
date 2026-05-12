@@ -99,7 +99,14 @@ const agentOption = Options.text("agent").pipe(
 
 const initModelOption = Options.text("model").pipe(
   Options.withDescription(
-    "Model to use for the agent (e.g. claude-sonnet-4-6). Defaults to the agent's default model",
+    "Baseline model to use for the agent (e.g. claude-sonnet-4-6). Defaults to the agent's default model",
+  ),
+  Options.optional,
+);
+
+const escalationModelOption = Options.text("escalation-model").pipe(
+  Options.withDescription(
+    "Model to use after retry/review escalation (e.g. claude-opus-4-6). Defaults to the agent's escalation model",
   ),
   Options.optional,
 );
@@ -160,6 +167,7 @@ const initCommand = Command.make(
     template: templateOption,
     agent: agentOption,
     model: initModelOption,
+    escalationModel: escalationModelOption,
     sandboxProvider: sandboxProviderOption,
     backlogManager: backlogManagerOption,
     profile: projectProfileOption,
@@ -174,6 +182,7 @@ const initCommand = Command.make(
     template,
     agent: agentFlag,
     model: modelFlag,
+    escalationModel: escalationModelFlag,
     sandboxProvider: sandboxProviderFlag,
     backlogManager: backlogManagerFlag,
     profile: profileFlag,
@@ -241,6 +250,10 @@ const initCommand = Command.make(
         modelFlag._tag === "Some"
           ? modelFlag.value
           : selectedAgent.defaultModel;
+      const selectedEscalationModel =
+        escalationModelFlag._tag === "Some"
+          ? escalationModelFlag.value
+          : selectedAgent.defaultEscalationModel;
 
       // Resolve sandbox provider: CLI flag > interactive select
       const sandboxProviders = listSandboxProviders();
@@ -398,6 +411,7 @@ const initCommand = Command.make(
         scaffold(cwd, {
           agent: selectedAgent,
           model: selectedModel,
+          escalationModel: selectedEscalationModel,
           templateName: selectedTemplate,
           createLabel: shouldCreateLabel === true,
           backlogManager: selectedBacklogManager,

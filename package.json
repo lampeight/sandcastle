@@ -56,6 +56,9 @@
     "ai",
     "agent"
   ],
+  "engines": {
+    "node": ">=20.18.1"
+  },
   "packageManager": "npm@10.9.2",
   "repository": {
     "type": "git",

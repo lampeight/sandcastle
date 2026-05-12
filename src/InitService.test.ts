@@ -2046,7 +2046,10 @@ describe("InitService scaffold", () => {
       ) as Record<string, unknown>;
 
       expect(main).toContain("uv sync --frozen --all-extras");
-      expect(main).toContain("codex(implementModel, { hostAuth: true })");
+      expect(main).toContain("Output.object({");
+      expect(main).toContain("pendingReview");
+      expect(main).toContain("usage_limited");
+      expect(main).toContain("codex(model, { hostAuth: true })");
       expect(implementPrompt).toContain("gh issue list");
       expect(implementPrompt).toContain("ready-for-agent");
       expect(reviewPrompt).toContain("gh issue close");
@@ -2059,6 +2062,10 @@ describe("InitService scaffold", () => {
       expect(config.profile).toBe("python-uv");
       expect(config.repo).toBe("lampeight/rockbox-manager");
       expect(config.readyLabel).toBe("ready-for-agent");
+      expect(config.model).toBe("gpt-5.4-mini");
+      expect(config.escalationModel).toBe("gpt-5.5");
+      expect(config.reviewModel).toBe("gpt-5.5");
+      expect(config.usageLimitExit).toEqual({ enabled: true });
     });
 
     it("can update package.json and root .gitignore", async () => {
@@ -2100,7 +2107,7 @@ describe("InitService scaffold", () => {
       );
 
       expect(main).toContain(
-        'agent: sandcastle.codex("gpt-5.4-mini", { hostAuth: true })',
+        "const provider = sandcastle.codex(model, { hostAuth: true });",
       );
       expect(main).not.toContain("sandcastle.claudeCode(");
     });
