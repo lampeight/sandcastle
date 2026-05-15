@@ -554,6 +554,32 @@ describe("codex factory", () => {
     }
   });
 
+  it("prepareRun passes authRotation selectUser through to Codex auth prep", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sandcastle-codex-provider-"));
+    try {
+      await writeFile(join(dir, "auth-alex.json"), '{"user":"alex"}');
+      await writeFile(join(dir, "auth-zoe.json"), '{"user":"zoe"}');
+
+      const provider = codex("gpt-5.4-mini", {
+        authRotation: {
+          enabled: true,
+          dir,
+          selectUser: ({ defaultUser }) => {
+            expect(defaultUser).toBe("alex");
+            return "zoe";
+          },
+        },
+      });
+      const prepared = await provider.prepareRun?.({
+        hostRepoDir: "/tmp/unused",
+      });
+
+      expect(prepared?.logMessages).toEqual(["Codex auth user: zoe"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("prepareRun snapshots the current host auth file when hostAuth is enabled", async () => {
     const dir = await mkdtemp(join(tmpdir(), "sandcastle-codex-provider-"));
     try {

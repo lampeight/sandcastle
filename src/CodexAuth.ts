@@ -16,7 +16,21 @@ export interface CodexAuthRotationOptions {
   readonly dir?: string;
   readonly stateFile?: string;
   readonly users?: readonly string[];
+  readonly selectUser?: CodexAuthUserSelector;
 }
+
+export interface CodexAuthSelectionContext {
+  readonly users: readonly string[];
+  readonly activeUser?: string;
+  readonly lastAssignedUser?: string;
+  readonly authDir: string;
+  readonly stateFile: string;
+  readonly defaultUser: string;
+}
+
+export type CodexAuthUserSelector = (
+  context: CodexAuthSelectionContext,
+) => Promise<string | undefined> | string | undefined;
 
 export interface CodexHostAuthOptions {
   readonly path?: string;
@@ -106,6 +120,24 @@ const nextUserInCycle = (
   const index = users.indexOf(current);
   if (index === -1) return users[0]!;
   return users[(index + 1) % users.length]!;
+};
+
+const resolveSelectedUser = async (
+  options: CodexAuthRotationOptions | undefined,
+  context: CodexAuthSelectionContext,
+): Promise<string> => {
+  const selectedUser = await options?.selectUser?.(context);
+  if (selectedUser === undefined) {
+    return context.defaultUser;
+  }
+  if (!context.users.includes(selectedUser)) {
+    throw new Error(
+      `Codex auth selector chose "${selectedUser}", but it is not one of: ${context.users.join(
+        ", ",
+      )}`,
+    );
+  }
+  return selectedUser;
 };
 
 const readRotationState = async (
@@ -298,7 +330,15 @@ export const prepareCodexAuth = async (
     const activeUser = await activeUserFromFiles(dir, users);
     const lastAssignedUser =
       (await readRotationState(stateFile))?.lastAssignedUser ?? activeUser;
-    const user = nextUserInCycle(lastAssignedUser, users);
+    const defaultUser = nextUserInCycle(lastAssignedUser, users);
+    const user = await resolveSelectedUser(options, {
+      users,
+      activeUser,
+      lastAssignedUser,
+      authDir: dir,
+      stateFile,
+      defaultUser,
+    });
     await writeRotationState(stateFile, { lastAssignedUser: user });
 
     const { content } = await readSelectedAuthContent(dir, user, activeUser);

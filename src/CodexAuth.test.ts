@@ -115,6 +115,62 @@ describe("prepareCodexAuth", () => {
     );
   });
 
+  it("allows a custom selector to override round-robin choice", async () => {
+    const dir = await makeAuthDir();
+    await writeFile(join(dir, "auth-alex.json"), '{"user":"alex"}');
+    await writeFile(join(dir, "auth-zoe.json"), '{"user":"zoe"}');
+    await writeFile(
+      join(dir, "auth-rotation-state.json"),
+      JSON.stringify({ lastAssignedUser: "alex" }),
+    );
+
+    const prepared = await prepareCodexAuth({
+      dir,
+      selectUser: ({ defaultUser, users, lastAssignedUser }) => {
+        expect(defaultUser).toBe("zoe");
+        expect(users).toEqual(["alex", "zoe"]);
+        expect(lastAssignedUser).toBe("alex");
+        return "alex";
+      },
+    });
+    cleanupFns.push(prepared.cleanup);
+
+    expect(prepared.user).toBe("alex");
+  });
+
+  it("falls back to round-robin when a custom selector returns undefined", async () => {
+    const dir = await makeAuthDir();
+    await writeFile(join(dir, "auth-alex.json"), '{"user":"alex"}');
+    await writeFile(join(dir, "auth-zoe.json"), '{"user":"zoe"}');
+    await writeFile(
+      join(dir, "auth-rotation-state.json"),
+      JSON.stringify({ lastAssignedUser: "alex" }),
+    );
+
+    const prepared = await prepareCodexAuth({
+      dir,
+      selectUser: () => undefined,
+    });
+    cleanupFns.push(prepared.cleanup);
+
+    expect(prepared.user).toBe("zoe");
+  });
+
+  it("rejects a custom selector result outside the candidate user set", async () => {
+    const dir = await makeAuthDir();
+    await writeFile(join(dir, "auth-alex.json"), '{"user":"alex"}');
+    await writeFile(join(dir, "auth-zoe.json"), '{"user":"zoe"}');
+
+    await expect(
+      prepareCodexAuth({
+        dir,
+        selectUser: () => "mia",
+      }),
+    ).rejects.toThrow(
+      'Codex auth selector chose "mia", but it is not one of: alex, zoe',
+    );
+  });
+
   it("snapshots the current host auth.json without rotation", async () => {
     const dir = await makeAuthDir();
     const idToken = makeIdToken({

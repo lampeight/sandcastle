@@ -286,11 +286,17 @@ const parseCodexStreamLine = (line: string): ParsedStreamEvent[] => {
 };
 
 /** Options for the codex agent provider. */
+export type {
+  CodexAuthSelectionContext,
+  CodexAuthUserSelector,
+} from "./CodexAuth.js";
+
 export interface CodexAuthRotationOptions {
   readonly enabled?: boolean;
   readonly dir?: string;
   readonly stateFile?: string;
   readonly users?: readonly string[];
+  readonly selectUser?: import("./CodexAuth.js").CodexAuthUserSelector;
 }
 
 export interface CodexHostAuthOptions {

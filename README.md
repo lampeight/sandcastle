@@ -816,6 +816,23 @@ agent: codex("gpt-5.4", { effort: "high" });
 
 When `authRotation` is enabled, Sandcastle discovers `auth-*.json` snapshots in the host Codex auth directory, selects one identity per run, and copies it into the sandbox as `/home/agent/.codex/auth.json`. Pass an explicit `users` list when you need a custom rotation order or want to include the currently active host identity in the cycle.
 
+`CodexAuthRotationOptions` also accepts `selectUser(context)`, a typed hook for custom auth selection. The hook receives `users`, `activeUser`, `lastAssignedUser`, `authDir`, `stateFile`, and the default round-robin `defaultUser`. Return a user from `users` to override selection, or `undefined` to keep the default.
+
+```typescript
+agent: codex("gpt-5.4", {
+  authRotation: {
+    enabled: true,
+    users: ["will", "darren", "nick", "eleanor"],
+    selectUser: async ({ users, defaultUser }) => {
+      const healthiestUser = await pickUserFromSomeLocalPolicy(users);
+      return healthiestUser ?? defaultUser;
+    },
+  },
+});
+```
+
+If `selectUser` returns a name outside the candidate `users` list, Sandcastle throws. If your custom policy is machine-local, keep that policy outside Sandcastle core and call it from this hook.
+
 ### Provider `env`
 
 Both **agent providers** and **sandbox providers** accept an optional `env: Record<string, string>` in their options. These environment variables are merged with the `.sandcastle/.env` resolver output at launch time:
