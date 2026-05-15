@@ -21,7 +21,11 @@ const TOOL_ARG_FIELDS: Record<string, string> = {
 const extractErrorMessage = (obj: any): string | undefined => {
   const err = obj.error;
   if (typeof err === "string") return err;
-  if (typeof err === "object" && err !== null && typeof err.message === "string") {
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    typeof err.message === "string"
+  ) {
     return err.message;
   }
   if (typeof obj.message === "string") return obj.message;
@@ -92,6 +96,22 @@ export interface AgentCommandOptions {
   readonly resumeSession?: string;
 }
 
+export interface PreparedSandboxFile {
+  readonly hostPath: string;
+  readonly sandboxPath: string;
+}
+
+export interface PreparedAgentRuntime {
+  readonly env?: Record<string, string>;
+  readonly sandboxFiles?: readonly PreparedSandboxFile[];
+  readonly logMessages?: readonly string[];
+  cleanup?(): Promise<void>;
+}
+
+export interface AgentPrepareOptions {
+  readonly hostRepoDir: string;
+}
+
 /** Return type of buildPrintCommand — command string plus optional stdin content.
  *  When `stdin` is set, the sandbox pipes it to the child process's stdin
  *  instead of inlining the prompt in argv, avoiding the Linux 128 KB per-arg limit. */
@@ -114,6 +134,9 @@ export interface AgentProvider {
   readonly env: Record<string, string>;
   /** When true, session capture is enabled for this provider. Default: true for Claude Code, false for others. */
   readonly captureSessions: boolean;
+  prepareRun?(
+    options: AgentPrepareOptions,
+  ): Promise<PreparedAgentRuntime | undefined>;
   buildPrintCommand(options: AgentCommandOptions): PrintCommand;
   buildInteractiveArgs?(options: AgentCommandOptions): string[];
   parseStreamLine(line: string): ParsedStreamEvent[];
@@ -263,10 +286,26 @@ const parseCodexStreamLine = (line: string): ParsedStreamEvent[] => {
 };
 
 /** Options for the codex agent provider. */
+export interface CodexAuthRotationOptions {
+  readonly enabled?: boolean;
+  readonly dir?: string;
+  readonly stateFile?: string;
+  readonly users?: readonly string[];
+}
+
+export interface CodexHostAuthOptions {
+  readonly enabled?: boolean;
+  readonly path?: string;
+}
+
 export interface CodexOptions {
   readonly effort?: "low" | "medium" | "high" | "xhigh";
   /** Environment variables injected by this agent provider. */
   readonly env?: Record<string, string>;
+  /** Snapshot the host's current ~/.codex/auth.json into the sandbox. */
+  readonly hostAuth?: boolean | CodexHostAuthOptions;
+  /** Rotate sandbox auth snapshots across multiple Codex identities on the host. */
+  readonly authRotation?: boolean | CodexAuthRotationOptions;
 }
 
 export const codex = (
@@ -276,6 +315,46 @@ export const codex = (
   name: "codex",
   env: options?.env ?? {},
   captureSessions: false,
+
+  async prepareRun(): Promise<PreparedAgentRuntime | undefined> {
+    const hostAuth =
+      typeof options?.hostAuth === "boolean"
+        ? { enabled: options.hostAuth }
+        : options?.hostAuth;
+    if (hostAuth?.enabled) {
+      const { prepareHostCodexAuth } = await import("./CodexAuth.js");
+      const prepared = await prepareHostCodexAuth(hostAuth);
+      return {
+        sandboxFiles: [
+          {
+            hostPath: prepared.snapshotPath,
+            sandboxPath: "/home/agent/.codex/auth.json",
+          },
+        ],
+        logMessages: [prepared.logMessage],
+        cleanup: prepared.cleanup,
+      };
+    }
+
+    const authRotation =
+      typeof options?.authRotation === "boolean"
+        ? { enabled: options.authRotation }
+        : options?.authRotation;
+    if (!authRotation?.enabled) return undefined;
+
+    const { prepareCodexAuth } = await import("./CodexAuth.js");
+    const prepared = await prepareCodexAuth(authRotation);
+    return {
+      sandboxFiles: [
+        {
+          hostPath: prepared.snapshotPath,
+          sandboxPath: "/home/agent/.codex/auth.json",
+        },
+      ],
+      logMessages: [prepared.logMessage],
+      cleanup: prepared.cleanup,
+    };
+  },
 
   buildPrintCommand({ prompt }: AgentCommandOptions): PrintCommand {
     const effortFlag = options?.effort

@@ -632,7 +632,7 @@ console.log(result.output.score); // typed as number
 
 ### Templates
 
-`sandcastle init` prompts you to choose a sandbox provider (Docker or Podman), a backlog manager (GitHub Issues or Beads), and a template, which scaffolds a ready-to-use prompt and `main.mts` suited to a specific workflow. If your project's `package.json` has `"type": "module"`, the file will be named `main.ts` instead. Five templates are available:
+`sandcastle init` prompts you to choose a sandbox provider (Docker or Podman), a backlog manager (GitHub Issues, GitLab Issues, or Beads), a project profile, and a template, which scaffolds a ready-to-use prompt and `main.mts` suited to a specific workflow. If your project's `package.json` has `"type": "module"`, the file will be named `main.ts` instead. Five templates are available:
 
 | Template                       | Description                                                               |
 | ------------------------------ | ------------------------------------------------------------------------- |
@@ -656,6 +656,8 @@ Scaffolds the `.sandcastle/` config directory and builds the container image. Th
 | `--agent`      | No       | Interactive prompt           | Agent to use (`claude-code`, `pi`, `codex`, `opencode`)              |
 | `--model`      | No       | Agent's default model        | Model to use (e.g. `claude-sonnet-4-6`). Defaults to agent's default |
 | `--template`   | No       | Interactive prompt           | Template to scaffold (e.g. `blank`, `simple-loop`)                   |
+
+Init also prompts for a backlog manager and a project profile. The built-in profiles are `node-npm`, `python-uv`, and `generic`.
 
 Creates the following files:
 
@@ -805,10 +807,14 @@ The `codex()` factory accepts an optional second argument for provider-specific 
 agent: codex("gpt-5.4", { effort: "high" });
 ```
 
-| Option   | Type                                           | Default | Description                                               |
-| -------- | ---------------------------------------------- | ------- | --------------------------------------------------------- |
-| `effort` | `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` | —       | Codex reasoning effort level via `model_reasoning_effort` |
-| `env`    | `Record<string, string>`                       | `{}`    | Environment variables injected by this agent provider     |
+| Option         | Type                                           | Default | Description                                                                 |
+| -------------- | ---------------------------------------------- | ------- | --------------------------------------------------------------------------- |
+| `effort`       | `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` | —       | Codex reasoning effort level via `model_reasoning_effort`                   |
+| `env`          | `Record<string, string>`                       | `{}`    | Environment variables injected by this agent provider                       |
+| `hostAuth`     | `boolean \| CodexHostAuthOptions`              | `false` | Snapshot the current host `~/.codex/auth.json` into the sandbox             |
+| `authRotation` | `boolean \| CodexAuthRotationOptions`          | `false` | Rotate per-run Codex auth snapshots from a host `auth-*.json` snapshot pool |
+
+When `authRotation` is enabled, Sandcastle discovers `auth-*.json` snapshots in the host Codex auth directory, selects one identity per run, and copies it into the sandbox as `/home/agent/.codex/auth.json`. Pass an explicit `users` list when you need a custom rotation order or want to include the currently active host identity in the cycle.
 
 ### Provider `env`
 

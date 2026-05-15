@@ -63,9 +63,12 @@ RUN apt-get update && apt-get install -y \\
   git \\
   curl \\
   jq \\
+  ripgrep \\
   && rm -rf /var/lib/apt/lists/*
 
 {{BACKLOG_MANAGER_TOOLS}}
+
+{{PROFILE_TOOLS}}
 
 # Build-args for UID/GID alignment: sandcastle docker build-image
 # defaults these to the host user's UID/GID so image-built files
@@ -98,9 +101,12 @@ RUN apt-get update && apt-get install -y \\
   git \\
   curl \\
   jq \\
+  ripgrep \\
   && rm -rf /var/lib/apt/lists/*
 
 {{BACKLOG_MANAGER_TOOLS}}
+
+{{PROFILE_TOOLS}}
 
 # Build-args for UID/GID alignment: sandcastle docker build-image
 # defaults these to the host user's UID/GID so image-built files
@@ -131,9 +137,12 @@ RUN apt-get update && apt-get install -y \\
   git \\
   curl \\
   jq \\
+  ripgrep \\
   && rm -rf /var/lib/apt/lists/*
 
 {{BACKLOG_MANAGER_TOOLS}}
+
+{{PROFILE_TOOLS}}
 
 # Build-args for UID/GID alignment: sandcastle docker build-image
 # defaults these to the host user's UID/GID so image-built files
@@ -164,9 +173,12 @@ RUN apt-get update && apt-get install -y \\
   git \\
   curl \\
   jq \\
+  ripgrep \\
   && rm -rf /var/lib/apt/lists/*
 
 {{BACKLOG_MANAGER_TOOLS}}
+
+{{PROFILE_TOOLS}}
 
 # Build-args for UID/GID alignment: sandcastle docker build-image
 # defaults these to the host user's UID/GID so image-built files
@@ -216,8 +228,9 @@ ANTHROPIC_API_KEY=`,
     defaultModel: "gpt-5.4-mini",
     factoryImport: "codex",
     dockerfileTemplate: CODEX_DOCKERFILE,
-    envExample: `# OpenAI API key
-OPENAI_KEY=`,
+    envExample: `# Codex uses host auth by default.
+# Sandcastle snapshots ~/.codex/auth.json into the sandbox when using the Codex agent.
+# Optional: set OPENAI_KEY only if you explicitly want API-key auth instead of host auth.`,
   },
   {
     name: "opencode",
@@ -239,12 +252,7 @@ export const listAgents = (): AgentEntry[] => AGENT_REGISTRY;
 export interface BacklogManagerEntry {
   readonly name: string;
   readonly label: string;
-  readonly templateArgs: {
-    readonly LIST_TASKS_COMMAND: string;
-    readonly VIEW_TASK_COMMAND: string;
-    readonly CLOSE_TASK_COMMAND: string;
-    readonly BACKLOG_MANAGER_TOOLS: string;
-  };
+  readonly templateArgs: Record<string, string>;
   /** Lines to append to `.env.example` for this backlog manager, or empty string if none needed. */
   readonly envExample: string;
 }
@@ -255,6 +263,14 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \\
   && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \\
   | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \\
   && apt-get update && apt-get install -y gh \\
+  && rm -rf /var/lib/apt/lists/*`;
+
+const GITLAB_CLI_TOOLS = `# Install GitLab CLI
+RUN GLAB_DEB_URL=$(curl -fsSL https://gitlab.com/api/v4/projects/34675721/releases/permalink/latest \\
+  | jq -r '.assets.links[] | select(.name | endswith("linux_amd64.deb")) | .url') \\
+  && curl -fsSL "$GLAB_DEB_URL" -o /tmp/glab.deb \\
+  && apt-get update && apt-get install -y /tmp/glab.deb \\
+  && rm -f /tmp/glab.deb \\
   && rm -rf /var/lib/apt/lists/*`;
 
 const BEADS_TOOLS = `# Install system dependencies for Beads
@@ -276,24 +292,44 @@ const BACKLOG_MANAGER_REGISTRY: BacklogManagerEntry[] = [
     name: "github-issues",
     label: "GitHub Issues",
     templateArgs: {
+      REPO_RESOLVER_COMMAND: `repo="\${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"`,
       LIST_TASKS_COMMAND: `gh issue list --state open --label Sandcastle --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`,
       VIEW_TASK_COMMAND: "gh issue view <ID>",
       CLOSE_TASK_COMMAND: `gh issue close <ID> --comment "Completed by Sandcastle"`,
       BACKLOG_MANAGER_TOOLS: GITHUB_CLI_TOOLS,
     },
     envExample: `# GitHub personal access token
-GH_TOKEN=`,
+GITHUB_TOKEN=
+GH_TOKEN=
+# GitHub repository in owner/name form. If omitted, Sandcastle falls back to gh repo view.
+GITHUB_REPOSITORY=`,
   },
   {
     name: "beads",
     label: "Beads",
     templateArgs: {
+      REPO_RESOLVER_COMMAND: "",
       LIST_TASKS_COMMAND: "bd ready --json",
       VIEW_TASK_COMMAND: "bd show <ID>",
       CLOSE_TASK_COMMAND: `bd close <ID> "Completed by Sandcastle"`,
       BACKLOG_MANAGER_TOOLS: BEADS_TOOLS,
     },
     envExample: "",
+  },
+  {
+    name: "gitlab",
+    label: "GitLab Issues",
+    templateArgs: {
+      REPO_RESOLVER_COMMAND: `repo="\${GITLAB_REPO:-$(git remote get-url origin)}"`,
+      LIST_TASKS_COMMAND: `repo="\${GITLAB_REPO:-$(git remote get-url origin)}"; glab issue list -R "$repo" --label ready-for-agent -O json -P 100`,
+      VIEW_TASK_COMMAND: `repo="\${GITLAB_REPO:-$(git remote get-url origin)}"; glab issue view -R "$repo" <ID>`,
+      CLOSE_TASK_COMMAND: `sh -lc 'repo="\${GITLAB_REPO:-$(git remote get-url origin)}" && glab issue note -R "$repo" <ID> -m "Completed by Sandcastle" && glab issue close -R "$repo" <ID>'`,
+      BACKLOG_MANAGER_TOOLS: GITLAB_CLI_TOOLS,
+    },
+    envExample: `# GitLab personal access token
+GITLAB_TOKEN=
+# GitLab repository path. If omitted, Sandcastle falls back to git remote get-url origin.
+GITLAB_REPO=`,
   },
 ];
 
@@ -307,6 +343,74 @@ export const getBacklogManager = (
 
 export const getAgent = (name: string): AgentEntry | undefined =>
   AGENT_REGISTRY.find((a) => a.name === name);
+
+// ---------------------------------------------------------------------------
+// Project profile registry (internal — not part of public API)
+// ---------------------------------------------------------------------------
+
+export interface ProjectProfileEntry {
+  readonly name: string;
+  readonly label: string;
+  readonly templateArgs: Record<string, string>;
+}
+
+const PYTHON_UV_TOOLS = `# Install Python, make, and uv for Python/uv projects
+RUN apt-get update && apt-get install -y \\
+  make \\
+  python3 \\
+  python3-venv \\
+  python3-pip \\
+  python-is-python3 \\
+  && rm -rf /var/lib/apt/lists/*
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+
+ENV PATH="/home/agent/workspace/.venv/bin:/home/agent/.local/bin:\${PATH}"`;
+
+const PROJECT_PROFILE_REGISTRY: ProjectProfileEntry[] = [
+  {
+    name: "node-npm",
+    label: "Node / npm",
+    templateArgs: {
+      PROFILE_TOOLS: "",
+      SANDBOX_READY_COMMAND: "npm install",
+      COPY_TO_WORKTREE: `["node_modules"]`,
+      TARGETED_VERIFY_COMMAND: "npm run typecheck",
+      BROAD_VERIFY_COMMAND: "npm run test",
+    },
+  },
+  {
+    name: "python-uv",
+    label: "Python / uv",
+    templateArgs: {
+      PROFILE_TOOLS: PYTHON_UV_TOOLS,
+      SANDBOX_READY_COMMAND:
+        "mkdir -p .cache/uv; export UV_CACHE_DIR=$PWD/.cache/uv; uv sync --frozen --all-extras",
+      COPY_TO_WORKTREE: "[]",
+      TARGETED_VERIFY_COMMAND: "uv run python -m pytest -q",
+      BROAD_VERIFY_COMMAND: "make ci",
+    },
+  },
+  {
+    name: "generic",
+    label: "Generic",
+    templateArgs: {
+      PROFILE_TOOLS: "",
+      SANDBOX_READY_COMMAND: "true",
+      COPY_TO_WORKTREE: "[]",
+      TARGETED_VERIFY_COMMAND: "true",
+      BROAD_VERIFY_COMMAND: "true",
+    },
+  },
+];
+
+export const listProjectProfiles = (): ProjectProfileEntry[] =>
+  PROJECT_PROFILE_REGISTRY;
+
+export const getProjectProfile = (
+  name: string,
+): ProjectProfileEntry | undefined =>
+  PROJECT_PROFILE_REGISTRY.find((p) => p.name === name);
 
 // ---------------------------------------------------------------------------
 // Sandbox provider registry (internal — not part of public API)
@@ -370,7 +474,7 @@ export function getNextStepsLines(
       `${step++}. Set the required env vars in .sandcastle/.env (see .sandcastle/.env.example)`,
       "   If you want to use your Claude subscription instead of an API key, see https://github.com/mattpocock/sandcastle/issues/191",
       `${step++}. Add "sandcastle": "npx tsx .sandcastle/${mainFilename}" to your package.json scripts`,
-      `${step++}. Templates use \`copyToWorktree: ["node_modules"]\` to copy your host node_modules into the sandbox for fast startup — the \`npm install\` in the onSandboxReady hook is a safety net for platform-specific binaries. Adjust both if you use a different package manager`,
+      `${step++}. Review the generated sandbox bootstrap and verification commands in .sandcastle/ to ensure they match your project tooling`,
       `${step++}. Read and customize the prompt files in .sandcastle/ — they shape what the agent does`,
     ];
     if (hasReviewer) {
@@ -489,6 +593,12 @@ const rewriteMainTs = (
       factoryCallRe,
       `${agent.factoryImport}("${model}")`,
     );
+    if (agent.name === "codex") {
+      content = content.replace(
+        /codex\(([^,\n]+)\)/g,
+        "codex($1, { hostAuth: true })",
+      );
+    }
 
     yield* fs
       .writeFileString(mainTsPath, content)
@@ -534,6 +644,8 @@ const TEXT_FILE_EXTENSIONS = new Set([
   ".txt",
   ".env",
   ".example",
+  ".mts",
+  ".ts",
   // Dockerfile / Containerfile have no extension — handled by name check below
 ]);
 
@@ -555,7 +667,7 @@ const isTextFile = (filename: string): boolean => {
  */
 const substituteTemplateArgs = (
   configDir: string,
-  backlogManager: BacklogManagerEntry,
+  templateArgs: Record<string, string>,
 ): Effect.Effect<void, Error, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -571,9 +683,7 @@ const substituteTemplateArgs = (
             .readFileString(filePath)
             .pipe(Effect.mapError((e) => new Error(e.message)));
           const original = content;
-          for (const [key, value] of Object.entries(
-            backlogManager.templateArgs,
-          )) {
+          for (const [key, value] of Object.entries(templateArgs)) {
             content = content.replace(
               new RegExp(`\\{\\{${key}\\}\\}`, "g"),
               value,
@@ -600,6 +710,7 @@ export interface ScaffoldOptions {
   templateName?: string;
   createLabel?: boolean;
   backlogManager?: BacklogManagerEntry;
+  projectProfile?: ProjectProfileEntry;
   sandboxProvider?: SandboxProviderEntry;
 }
 
@@ -643,6 +754,7 @@ export const scaffold = (
       templateName = "blank",
       createLabel = true,
       backlogManager = BACKLOG_MANAGER_REGISTRY[0]!, // default: github-issues
+      projectProfile = PROJECT_PROFILE_REGISTRY[0]!, // default: node-npm
       sandboxProvider = SANDBOX_PROVIDER_REGISTRY[0]!, // default: docker
     } = options;
     const fs = yield* FileSystem.FileSystem;
@@ -666,6 +778,10 @@ export const scaffold = (
       .pipe(Effect.mapError((e) => new Error(e.message)));
 
     const templateDir = yield* getTemplateDir(templateName);
+    const templateArgs = {
+      ...backlogManager.templateArgs,
+      ...projectProfile.templateArgs,
+    };
 
     // Build .env.example from agent + backlog manager env blocks
     const envExampleParts = [agent.envExample];
@@ -697,7 +813,7 @@ export const scaffold = (
     yield* rewriteMainTs(configDir, agent, model, mainFilename);
 
     // Replace backlog manager template arguments in all text files (must run before label stripping)
-    yield* substituteTemplateArgs(configDir, backlogManager);
+    yield* substituteTemplateArgs(configDir, templateArgs);
 
     // Strip --label Sandcastle from prompt files when the user declined label creation
     if (!createLabel) {

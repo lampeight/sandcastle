@@ -20,6 +20,8 @@ import {
   getAgent,
   listBacklogManagers,
   getBacklogManager,
+  listProjectProfiles,
+  getProjectProfile,
   listSandboxProviders,
   getSandboxProvider,
   getNextStepsLines,
@@ -28,6 +30,7 @@ import { defaultImageName } from "./sandboxes/docker.js";
 import type {
   AgentEntry,
   BacklogManagerEntry,
+  ProjectProfileEntry,
   SandboxProviderEntry,
 } from "./InitService.js";
 import { ConfigDirError, InitError } from "./errors.js";
@@ -221,6 +224,30 @@ const initCommand = Command.make(
         selectedBacklogManager = getBacklogManager(selected as string)!;
       }
 
+      // Resolve project profile: interactive select
+      const projectProfiles = listProjectProfiles();
+      let selectedProjectProfile: ProjectProfileEntry;
+      {
+        const selected = yield* Effect.promise(() =>
+          clack.select({
+            message: "Select a project profile:",
+            initialValue: "node-npm",
+            options: projectProfiles.map((p) => ({
+              value: p.name,
+              label: p.label,
+            })),
+          }),
+        );
+        if (clack.isCancel(selected)) {
+          yield* Effect.fail(
+            new InitError({
+              message: "Project profile selection cancelled.",
+            }),
+          );
+        }
+        selectedProjectProfile = getProjectProfile(selected as string)!;
+      }
+
       // Resolve template: CLI flag > interactive select (already validated above)
       let selectedTemplate: string;
       if (template._tag === "Some") {
@@ -276,6 +303,7 @@ const initCommand = Command.make(
           templateName: selectedTemplate,
           createLabel: shouldCreateLabel === true,
           backlogManager: selectedBacklogManager,
+          projectProfile: selectedProjectProfile,
           sandboxProvider: selectedSandboxProvider,
         }).pipe(
           Effect.mapError(

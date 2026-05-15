@@ -42,6 +42,10 @@ import { noSandbox } from "./sandboxes/no-sandbox.js";
 import { raceAbortSignal } from "./raceAbortSignal.js";
 import { resolveCwd } from "./resolveCwd.js";
 import type { Timeouts } from "./run.js";
+import {
+  applyPreparedAgentRuntime,
+  prepareAgentRuntime,
+} from "./AgentPreparation.js";
 
 export interface InteractiveOptions {
   /** Agent provider to use (e.g. claudeCode("claude-opus-4-6")) */
@@ -162,6 +166,9 @@ export const interactive = async (
   const inner = Effect.gen(function* () {
     const hostRepoDir = yield* resolveCwd(options.cwd);
     const d = yield* Display;
+    const preparedRuntime = yield* Effect.promise(() =>
+      prepareAgentRuntime(provider, hostRepoDir),
+    );
 
     // 1. Resolve prompt (from string or file), or skip if neither provided
     const hasPromptSource = prompt !== undefined || promptFile !== undefined;
@@ -175,7 +182,10 @@ export const interactive = async (
     const resolvedEnv = yield* resolveEnv(hostRepoDir);
     const env = mergeProviderEnv({
       resolvedEnv,
-      agentProviderEnv: provider.env,
+      agentProviderEnv: {
+        ...provider.env,
+        ...(preparedRuntime?.env ?? {}),
+      },
       sandboxProviderEnv: sandboxProvider.env,
     });
     const effectiveEnv = { ...env, ...(options.env ?? {}) };
@@ -362,11 +372,21 @@ export const interactive = async (
             const fullPrompt =
               !hasPromptSource || isInlinePrompt
                 ? substitutedPrompt
-                : yield* preprocessPrompt(
-                    substitutedPrompt,
-                    ctx.sandbox,
-                    ctx.sandboxRepoDir,
-                  );
+                : yield* Effect.gen(function* () {
+                    yield* applyPreparedAgentRuntime(
+                      preparedRuntime,
+                      ctx.sandbox,
+                    );
+                    return yield* preprocessPrompt(
+                      substitutedPrompt,
+                      ctx.sandbox,
+                      ctx.sandboxRepoDir,
+                    );
+                  });
+
+            if (!hasPromptSource || isInlinePrompt) {
+              yield* applyPreparedAgentRuntime(preparedRuntime, ctx.sandbox);
+            }
 
             // Build interactive args and run the session
             const interactiveArgs = provider.buildInteractiveArgs!({
@@ -431,6 +451,9 @@ export const interactive = async (
         exitCode,
       };
     }).pipe(
+      Effect.ensuring(
+        Effect.promise(() => preparedRuntime?.cleanup?.() ?? Promise.resolve()),
+      ),
       // On error, always clean up worktree (on success, handled above with preserve check)
       Effect.tapError(() =>
         worktreeInfo

@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { claudeCode, codex, opencode, pi } from "./AgentProvider.js";
 import type { AgentCommandOptions } from "./AgentProvider.js";
@@ -524,6 +527,74 @@ describe("codex factory", () => {
       );
     }
   });
+
+  it("prepareRun snapshots a rotated auth file when authRotation is enabled", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sandcastle-codex-provider-"));
+    try {
+      await writeFile(join(dir, "auth.json"), '{"user":"will-active"}');
+      await writeFile(join(dir, "auth-zoe.json"), '{"user":"zoe"}');
+      await writeFile(join(dir, "auth-alex.json"), '{"user":"alex"}');
+
+      const provider = codex("gpt-5.4-mini", {
+        authRotation: { enabled: true, dir },
+      });
+      const prepared = await provider.prepareRun?.({
+        hostRepoDir: "/tmp/unused",
+      });
+
+      expect(prepared?.sandboxFiles).toEqual([
+        {
+          hostPath: prepared!.sandboxFiles![0]!.hostPath,
+          sandboxPath: "/home/agent/.codex/auth.json",
+        },
+      ]);
+      expect(prepared?.logMessages).toEqual(["Codex auth user: alex"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prepareRun snapshots the current host auth file when hostAuth is enabled", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sandcastle-codex-provider-"));
+    try {
+      const idToken = [
+        Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString(
+          "base64url",
+        ),
+        Buffer.from(
+          JSON.stringify({
+            name: "Will Tonna",
+            email: "will.tonna@cirrusconnects.com",
+          }),
+        ).toString("base64url"),
+        "",
+      ].join(".");
+      await writeFile(
+        join(dir, "auth.json"),
+        JSON.stringify({ tokens: { id_token: idToken } }),
+      );
+
+      const provider = codex("gpt-5.4-mini", {
+        hostAuth: { enabled: true, path: join(dir, "auth.json") },
+      });
+      const prepared = await provider.prepareRun?.({
+        hostRepoDir: "/tmp/unused",
+      });
+
+      expect(prepared?.sandboxFiles).toEqual([
+        {
+          hostPath: prepared!.sandboxFiles![0]!.hostPath,
+          sandboxPath: "/home/agent/.codex/auth.json",
+        },
+      ]);
+      expect(prepared?.logMessages).toEqual([
+        "Codex auth user: Will Tonna (will.tonna@cirrusconnects.com)",
+      ]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("parseStreamLine extracts text and result from item.completed agent_message", () => {
     const provider = codex("gpt-5.4-mini");
     const line = JSON.stringify({
@@ -759,7 +830,9 @@ describe("opencode factory", () => {
   });
 
   it("buildPrintCommand shell-escapes the variant value", () => {
-    const provider = opencode("opencode/big-pickle", { variant: "it's tricky" });
+    const provider = opencode("opencode/big-pickle", {
+      variant: "it's tricky",
+    });
     const { command } = provider.buildPrintCommand(opts("test"));
     expect(command).toContain("--variant 'it'\\''s tricky'");
   });

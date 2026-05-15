@@ -12,6 +12,8 @@ import {
   listTemplates,
   listBacklogManagers,
   getBacklogManager,
+  listProjectProfiles,
+  getProjectProfile,
   listSandboxProviders,
   getSandboxProvider,
 } from "./InitService.js";
@@ -145,7 +147,7 @@ describe("InitService scaffold", () => {
     },
     {
       agent: codexAgent,
-      expectedKey: "OPENAI_KEY=",
+      expectedKey: "Codex uses host auth by default.",
       unexpectedKey: "ANTHROPIC_API_KEY=",
       expectIssue191Link: false,
     },
@@ -198,6 +200,20 @@ describe("InitService scaffold", () => {
       join(dir, ".sandcastle", ".env.example"),
       "utf-8",
     );
+    expect(envExample).not.toContain("GH_TOKEN=");
+  });
+
+  it("generates .env.example with GITLAB_TOKEN when backlog manager is gitlab", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      backlogManager: getBacklogManager("gitlab"),
+    });
+
+    const envExample = await readFile(
+      join(dir, ".sandcastle", ".env.example"),
+      "utf-8",
+    );
+    expect(envExample).toContain("GITLAB_TOKEN=");
     expect(envExample).not.toContain("GH_TOKEN=");
   });
 
@@ -580,15 +596,14 @@ describe("InitService scaffold", () => {
     it("non-blank template includes a note about customizing the install command", () => {
       const lines = getNextStepsLines("simple-loop", "main.mts");
       const joined = lines.join("\n");
-      expect(joined).toContain("npm install");
-      expect(joined).toContain("onSandboxReady");
+      expect(joined).toContain("sandbox bootstrap");
+      expect(joined).toContain("verification commands");
     });
 
     it("non-blank template mentions copyToWorktree and node_modules", () => {
       const lines = getNextStepsLines("simple-loop", "main.mts");
       const joined = lines.join("\n");
-      expect(joined).toContain("copyToWorktree");
-      expect(joined).toContain("node_modules");
+      expect(joined).toContain("project tooling");
     });
 
     it("blank template includes a step to customize prompt.md", () => {
@@ -702,7 +717,7 @@ describe("InitService scaffold", () => {
       join(dir, ".sandcastle", "main.mts"),
       "utf-8",
     );
-    expect(mainTs).toContain('codex("gpt-5.4-mini")');
+    expect(mainTs).toContain('codex("gpt-5.4-mini", { hostAuth: true })');
     expect(mainTs).not.toContain("claudeCode");
   });
 
@@ -1152,10 +1167,11 @@ describe("InitService scaffold", () => {
   // --- Backlog manager ---
 
   describe("Backlog manager registry", () => {
-    it("listBacklogManagers returns github-issues and beads", () => {
+    it("listBacklogManagers returns github-issues, beads, and gitlab", () => {
       const managers = listBacklogManagers();
       expect(managers.some((m) => m.name === "github-issues")).toBe(true);
       expect(managers.some((m) => m.name === "beads")).toBe(true);
+      expect(managers.some((m) => m.name === "gitlab")).toBe(true);
     });
 
     it("getBacklogManager returns github-issues entry with expected templateArgs", () => {
@@ -1200,6 +1216,28 @@ describe("InitService scaffold", () => {
       );
     });
 
+    it("getBacklogManager returns gitlab entry with expected templateArgs", () => {
+      const manager = getBacklogManager("gitlab");
+      expect(manager).toBeDefined();
+      expect(manager!.label).toBe("GitLab Issues");
+      expect(manager!.templateArgs.LIST_TASKS_COMMAND).toContain(
+        "glab issue list",
+      );
+      expect(manager!.templateArgs.LIST_TASKS_COMMAND).toContain(
+        "--label Sandcastle",
+      );
+      expect(manager!.templateArgs.VIEW_TASK_COMMAND).toContain(
+        "glab issue view",
+      );
+      expect(manager!.templateArgs.CLOSE_TASK_COMMAND).toContain(
+        "glab issue close -R",
+      );
+      expect(manager!.templateArgs.BACKLOG_MANAGER_TOOLS).toContain(
+        "GitLab CLI",
+      );
+      expect(manager!.envExample).toContain("GITLAB_TOKEN=");
+    });
+
     it("getBacklogManager returns undefined for unknown manager", () => {
       expect(getBacklogManager("nonexistent")).toBeUndefined();
     });
@@ -1240,6 +1278,24 @@ describe("InitService scaffold", () => {
       expect(prompt).toContain("bd close");
       expect(prompt).not.toContain("gh issue list");
       expect(prompt).not.toContain("gh issue close");
+      expect(prompt).not.toContain("{{LIST_TASKS_COMMAND}}");
+      expect(prompt).not.toContain("{{CLOSE_TASK_COMMAND}}");
+    });
+
+    it("simple-loop with gitlab produces prompt with glab issue commands", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, {
+        templateName: "simple-loop",
+        backlogManager: getBacklogManager("gitlab"),
+      });
+
+      const prompt = await readFile(
+        join(dir, ".sandcastle", "prompt.md"),
+        "utf-8",
+      );
+      expect(prompt).toContain("glab issue list");
+      expect(prompt).toContain("glab issue note");
+      expect(prompt).toContain("glab issue close");
       expect(prompt).not.toContain("{{LIST_TASKS_COMMAND}}");
       expect(prompt).not.toContain("{{CLOSE_TASK_COMMAND}}");
     });
@@ -1741,6 +1797,24 @@ describe("InitService scaffold", () => {
       expect(dockerfile).toContain("dpkg-architecture -qDEB_HOST_MULTIARCH");
     });
 
+    it("scaffold with gitlab produces Dockerfile with GitLab CLI install", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, {
+        backlogManager: getBacklogManager("gitlab"),
+      });
+
+      const dockerfile = await readFile(
+        join(dir, ".sandcastle", "Dockerfile"),
+        "utf-8",
+      );
+      expect(dockerfile).toContain("ripgrep");
+      expect(dockerfile).toContain("GitLab CLI");
+      expect(dockerfile).toContain(
+        "https://gitlab.com/api/v4/projects/34675721/releases/permalink/latest",
+      );
+      expect(dockerfile).not.toContain("{{BACKLOG_MANAGER_TOOLS}}");
+    });
+
     it("scaffold with beads + podman produces Containerfile with beads install", async () => {
       const dir = await makeDir();
       const podmanProvider = getSandboxProvider("podman")!;
@@ -1977,5 +2051,53 @@ describe("Sandbox provider registry", () => {
 
   it("getSandboxProvider returns undefined for unknown provider", () => {
     expect(getSandboxProvider("nonexistent")).toBeUndefined();
+  });
+});
+
+describe("Project profile registry", () => {
+  it("listProjectProfiles returns node-npm, python-uv, and generic", () => {
+    const profiles = listProjectProfiles();
+    expect(profiles.some((p) => p.name === "node-npm")).toBe(true);
+    expect(profiles.some((p) => p.name === "python-uv")).toBe(true);
+    expect(profiles.some((p) => p.name === "generic")).toBe(true);
+  });
+
+  it("getProjectProfile returns python-uv entry with uv setup", () => {
+    const profile = getProjectProfile("python-uv");
+    expect(profile).toBeDefined();
+    expect(profile!.templateArgs.PROFILE_TOOLS).toContain("uv/install.sh");
+    expect(profile!.templateArgs.SANDBOX_READY_COMMAND).toContain("uv sync");
+  });
+
+  it("scaffolds python-uv profile commands into templates", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      templateName: "parallel-planner",
+      projectProfile: getProjectProfile("python-uv"),
+    });
+
+    const dockerfile = await readFile(
+      join(dir, ".sandcastle", "Dockerfile"),
+      "utf-8",
+    );
+    const main = await readFile(join(dir, ".sandcastle", "main.mts"), "utf-8");
+    const implementPrompt = await readFile(
+      join(dir, ".sandcastle", "implement-prompt.md"),
+      "utf-8",
+    );
+    const mergePrompt = await readFile(
+      join(dir, ".sandcastle", "merge-prompt.md"),
+      "utf-8",
+    );
+
+    expect(dockerfile).toContain("uv/install.sh");
+    expect(main).toContain("uv sync --frozen --all-extras");
+    expect(main).toContain("JSON.parse('[]') as string[]");
+    expect(implementPrompt).toContain("uv run python -m pytest -q");
+    expect(mergePrompt).toContain("make ci");
+  });
+
+  it("getProjectProfile returns undefined for unknown profile", () => {
+    expect(getProjectProfile("nonexistent")).toBeUndefined();
   });
 });

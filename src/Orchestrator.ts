@@ -19,6 +19,8 @@ import {
   transferSession,
 } from "./SessionStore.js";
 import { SessionPaths } from "./SessionPaths.js";
+import { applyPreparedAgentRuntime } from "./AgentPreparation.js";
+import type { PreparedAgentRuntime } from "./AgentProvider.js";
 
 export type { ParsedStreamEvent, IterationUsage } from "./AgentProvider.js";
 
@@ -127,9 +129,7 @@ const invokeAgent = (
           errorDetail = resultText;
         }
         if (!errorDetail.trim()) {
-          const lines = execResult.stdout
-            .split("\n")
-            .filter((l) => l.trim());
+          const lines = execResult.stdout.split("\n").filter((l) => l.trim());
           errorDetail = lines.slice(-20).join("\n");
         }
         return yield* Effect.fail(
@@ -195,6 +195,8 @@ export interface OrchestrateOptions {
   readonly signal?: AbortSignal;
   /** When true, skip prompt expansion (shell expression evaluation). Set for dynamic inline prompts. */
   readonly skipPromptExpansion?: boolean;
+  /** Optional precomputed provider runtime to apply before each invocation. */
+  readonly preparedRuntime?: PreparedAgentRuntime;
 }
 
 /** Per-iteration result carrying an optional session ID. */
@@ -296,6 +298,21 @@ export const orchestrate = (
                         sessionId: iterationResumeSession,
                       }),
                   });
+                }
+
+                if (options.preparedRuntime) {
+                  yield* display.status(
+                    label("Preparing agent runtime"),
+                    "info",
+                  );
+                  for (const message of options.preparedRuntime.logMessages ??
+                    []) {
+                    yield* display.status(label(message), "info");
+                  }
+                  yield* applyPreparedAgentRuntime(
+                    options.preparedRuntime,
+                    ctx.sandbox,
+                  );
                 }
 
                 // Preprocess prompt (run !`command` expressions inside sandbox).
