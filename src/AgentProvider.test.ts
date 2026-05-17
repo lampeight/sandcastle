@@ -548,7 +548,10 @@ describe("codex factory", () => {
           sandboxPath: "/home/agent/.codex/auth.json",
         },
       ]);
-      expect(prepared?.logMessages).toEqual(["Codex auth user: alex"]);
+      expect(prepared?.logMessages).toEqual([
+        "Codex auth selected by round-robin: alex",
+        "Codex auth user: alex",
+      ]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -574,7 +577,10 @@ describe("codex factory", () => {
         hostRepoDir: "/tmp/unused",
       });
 
-      expect(prepared?.logMessages).toEqual(["Codex auth user: zoe"]);
+      expect(prepared?.logMessages).toEqual([
+        "Codex auth selector chose zoe",
+        "Codex auth user: zoe",
+      ]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

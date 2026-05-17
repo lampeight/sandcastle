@@ -816,7 +816,7 @@ agent: codex("gpt-5.4", { effort: "high" });
 
 When `authRotation` is enabled, Sandcastle discovers `auth-*.json` snapshots in the host Codex auth directory, selects one identity per run, and copies it into the sandbox as `/home/agent/.codex/auth.json`. Pass an explicit `users` list when you need a custom rotation order or want to include the currently active host identity in the cycle.
 
-`CodexAuthRotationOptions` also accepts `selectUser(context)`, a typed hook for custom auth selection. The hook receives `users`, `activeUser`, `lastAssignedUser`, `authDir`, `stateFile`, and the default round-robin `defaultUser`. Return a user from `users` to override selection, or `undefined` to keep the default.
+`CodexAuthRotationOptions` also accepts `selectUser(context)`, a typed hook for custom auth selection. The hook receives `users`, `activeUser`, `lastAssignedUser`, `authDir`, `stateFile`, and the core-computed round-robin `defaultUser`. Return a user from `users` to override selection, or `undefined` to keep the default.
 
 ```typescript
 agent: codex("gpt-5.4", {
@@ -831,7 +831,7 @@ agent: codex("gpt-5.4", {
 });
 ```
 
-If `selectUser` returns a name outside the candidate `users` list, Sandcastle throws. If your custom policy is machine-local, keep that policy outside Sandcastle core and call it from this hook.
+If `selectUser` throws, returns `undefined`, or returns a name outside the candidate `users` list, Sandcastle falls back to `defaultUser`, updates rotation state with that fallback choice, and logs the fallback reason. To fail closed instead, throw `new CodexAuthSelectionError(message, { fallbackToDefaultUser: false })`. If your custom policy is machine-local, keep that policy outside Sandcastle core and call it from this hook.
 
 ### Provider `env`
 

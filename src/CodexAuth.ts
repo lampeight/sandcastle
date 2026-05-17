@@ -32,6 +32,19 @@ export type CodexAuthUserSelector = (
   context: CodexAuthSelectionContext,
 ) => Promise<string | undefined> | string | undefined;
 
+export class CodexAuthSelectionError extends Error {
+  readonly fallbackToDefaultUser: boolean;
+
+  constructor(
+    message: string,
+    options?: { readonly fallbackToDefaultUser?: boolean },
+  ) {
+    super(message);
+    this.name = "CodexAuthSelectionError";
+    this.fallbackToDefaultUser = options?.fallbackToDefaultUser ?? true;
+  }
+}
+
 export interface CodexHostAuthOptions {
   readonly path?: string;
 }
@@ -40,7 +53,7 @@ export interface PreparedCodexAuth {
   readonly user: string;
   readonly displayName?: string;
   readonly email?: string;
-  readonly logMessage: string;
+  readonly logMessages: readonly string[];
   readonly snapshotPath: string;
   cleanup(): Promise<void>;
 }
@@ -122,22 +135,52 @@ const nextUserInCycle = (
   return users[(index + 1) % users.length]!;
 };
 
+interface SelectionResolution {
+  readonly user: string;
+  readonly logMessage: string;
+}
+
 const resolveSelectedUser = async (
   options: CodexAuthRotationOptions | undefined,
   context: CodexAuthSelectionContext,
-): Promise<string> => {
-  const selectedUser = await options?.selectUser?.(context);
-  if (selectedUser === undefined) {
-    return context.defaultUser;
+): Promise<SelectionResolution> => {
+  if (!options?.selectUser) {
+    return {
+      user: context.defaultUser,
+      logMessage: `Codex auth selected by round-robin: ${context.defaultUser}`,
+    };
   }
-  if (!context.users.includes(selectedUser)) {
-    throw new Error(
-      `Codex auth selector chose "${selectedUser}", but it is not one of: ${context.users.join(
-        ", ",
-      )}`,
-    );
+
+  try {
+    const selectedUser = await options.selectUser(context);
+    if (selectedUser === undefined) {
+      return {
+        user: context.defaultUser,
+        logMessage: `Codex auth selector returned no user; fell back to round-robin: ${context.defaultUser}`,
+      };
+    }
+    if (!context.users.includes(selectedUser)) {
+      return {
+        user: context.defaultUser,
+        logMessage: `Codex auth selector returned invalid user "${selectedUser}"; fell back to round-robin: ${context.defaultUser}`,
+      };
+    }
+    return {
+      user: selectedUser,
+      logMessage: `Codex auth selector chose ${selectedUser}`,
+    };
+  } catch (error) {
+    if (
+      error instanceof CodexAuthSelectionError &&
+      !error.fallbackToDefaultUser
+    ) {
+      throw error;
+    }
+    return {
+      user: context.defaultUser,
+      logMessage: `Codex auth selector failed (${error instanceof Error ? error.message : String(error)}); fell back to round-robin: ${context.defaultUser}`,
+    };
   }
-  return selectedUser;
 };
 
 const readRotationState = async (
@@ -303,7 +346,7 @@ export const prepareHostCodexAuth = async (
     user: "host",
     displayName: authDescription.displayName,
     email: authDescription.email,
-    logMessage: authDescription.logMessage,
+    logMessages: [authDescription.logMessage],
     snapshotPath,
     cleanup: async () => {
       await rm(snapshotDir, { recursive: true, force: true });
@@ -331,7 +374,7 @@ export const prepareCodexAuth = async (
     const lastAssignedUser =
       (await readRotationState(stateFile))?.lastAssignedUser ?? activeUser;
     const defaultUser = nextUserInCycle(lastAssignedUser, users);
-    const user = await resolveSelectedUser(options, {
+    const selection = await resolveSelectedUser(options, {
       users,
       activeUser,
       lastAssignedUser,
@@ -339,6 +382,7 @@ export const prepareCodexAuth = async (
       stateFile,
       defaultUser,
     });
+    const user = selection.user;
     await writeRotationState(stateFile, { lastAssignedUser: user });
 
     const { content } = await readSelectedAuthContent(dir, user, activeUser);
@@ -351,7 +395,7 @@ export const prepareCodexAuth = async (
       user,
       displayName: authDescription.displayName,
       email: authDescription.email,
-      logMessage: authDescription.logMessage,
+      logMessages: [selection.logMessage, authDescription.logMessage],
       snapshotPath,
       cleanup: async () => {
         await rm(snapshotDir, { recursive: true, force: true });

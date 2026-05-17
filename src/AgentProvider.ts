@@ -337,7 +337,7 @@ export const codex = (
             sandboxPath: "/home/agent/.codex/auth.json",
           },
         ],
-        logMessages: [prepared.logMessage],
+        logMessages: prepared.logMessages,
         cleanup: prepared.cleanup,
       };
     }
@@ -357,7 +357,7 @@ export const codex = (
           sandboxPath: "/home/agent/.codex/auth.json",
         },
       ],
-      logMessages: [prepared.logMessage],
+      logMessages: prepared.logMessages,
       cleanup: prepared.cleanup,
     };
   },

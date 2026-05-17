@@ -2,7 +2,11 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { prepareCodexAuth, prepareHostCodexAuth } from "./CodexAuth.js";
+import {
+  CodexAuthSelectionError,
+  prepareCodexAuth,
+  prepareHostCodexAuth,
+} from "./CodexAuth.js";
 
 const cleanupFns: Array<() => Promise<void>> = [];
 
@@ -110,9 +114,10 @@ describe("prepareCodexAuth", () => {
     expect(prepared.user).toBe("will");
     expect(prepared.displayName).toBe("Will Tonna");
     expect(prepared.email).toBe("will.tonna@cirrusconnects.com");
-    expect(prepared.logMessage).toBe(
+    expect(prepared.logMessages).toEqual([
+      "Codex auth selected by round-robin: will",
       "Codex auth user: Will Tonna (will, will.tonna@cirrusconnects.com)",
-    );
+    ]);
   });
 
   it("allows a custom selector to override round-robin choice", async () => {
@@ -136,6 +141,10 @@ describe("prepareCodexAuth", () => {
     cleanupFns.push(prepared.cleanup);
 
     expect(prepared.user).toBe("alex");
+    expect(prepared.logMessages).toEqual([
+      "Codex auth selector chose alex",
+      "Codex auth user: alex",
+    ]);
   });
 
   it("falls back to round-robin when a custom selector returns undefined", async () => {
@@ -154,9 +163,65 @@ describe("prepareCodexAuth", () => {
     cleanupFns.push(prepared.cleanup);
 
     expect(prepared.user).toBe("zoe");
+    expect(prepared.logMessages).toEqual([
+      "Codex auth selector returned no user; fell back to round-robin: zoe",
+      "Codex auth user: zoe",
+    ]);
   });
 
-  it("rejects a custom selector result outside the candidate user set", async () => {
+  it("falls back when a custom selector returns a user outside the candidate set", async () => {
+    const dir = await makeAuthDir();
+    await writeFile(join(dir, "auth-alex.json"), '{"user":"alex"}');
+    await writeFile(join(dir, "auth-zoe.json"), '{"user":"zoe"}');
+    await writeFile(
+      join(dir, "auth-rotation-state.json"),
+      JSON.stringify({ lastAssignedUser: "alex" }),
+    );
+
+    const prepared = await prepareCodexAuth({
+      dir,
+      selectUser: () => "mia",
+    });
+    cleanupFns.push(prepared.cleanup);
+
+    expect(prepared.user).toBe("zoe");
+    expect(prepared.logMessages).toEqual([
+      'Codex auth selector returned invalid user "mia"; fell back to round-robin: zoe',
+      "Codex auth user: zoe",
+    ]);
+    expect(await readFile(join(dir, "auth-rotation-state.json"), "utf-8")).toBe(
+      JSON.stringify({ lastAssignedUser: "zoe" }),
+    );
+  });
+
+  it("falls back when a custom selector throws", async () => {
+    const dir = await makeAuthDir();
+    await writeFile(join(dir, "auth-alex.json"), '{"user":"alex"}');
+    await writeFile(join(dir, "auth-zoe.json"), '{"user":"zoe"}');
+    await writeFile(
+      join(dir, "auth-rotation-state.json"),
+      JSON.stringify({ lastAssignedUser: "alex" }),
+    );
+
+    const prepared = await prepareCodexAuth({
+      dir,
+      selectUser: () => {
+        throw new Error("usage command failed");
+      },
+    });
+    cleanupFns.push(prepared.cleanup);
+
+    expect(prepared.user).toBe("zoe");
+    expect(prepared.logMessages).toEqual([
+      "Codex auth selector failed (usage command failed); fell back to round-robin: zoe",
+      "Codex auth user: zoe",
+    ]);
+    expect(await readFile(join(dir, "auth-rotation-state.json"), "utf-8")).toBe(
+      JSON.stringify({ lastAssignedUser: "zoe" }),
+    );
+  });
+
+  it("propagates a hard-fail selector error", async () => {
     const dir = await makeAuthDir();
     await writeFile(join(dir, "auth-alex.json"), '{"user":"alex"}');
     await writeFile(join(dir, "auth-zoe.json"), '{"user":"zoe"}');
@@ -164,10 +229,15 @@ describe("prepareCodexAuth", () => {
     await expect(
       prepareCodexAuth({
         dir,
-        selectUser: () => "mia",
+        selectUser: () => {
+          throw new CodexAuthSelectionError(
+            "No Codex users have usage-limit headroom; refusing to spill into credits.",
+            { fallbackToDefaultUser: false },
+          );
+        },
       }),
     ).rejects.toThrow(
-      'Codex auth selector chose "mia", but it is not one of: alex, zoe',
+      "No Codex users have usage-limit headroom; refusing to spill into credits.",
     );
   });
 
@@ -188,9 +258,9 @@ describe("prepareCodexAuth", () => {
     expect(prepared.user).toBe("host");
     expect(prepared.displayName).toBe("Nick Benzie");
     expect(prepared.email).toBe("nick.benzie@cirrusconnects.com");
-    expect(prepared.logMessage).toBe(
+    expect(prepared.logMessages).toEqual([
       "Codex auth user: Nick Benzie (nick.benzie@cirrusconnects.com)",
-    );
+    ]);
     expect(await readFile(prepared.snapshotPath, "utf-8")).toBe(authJson);
   });
 });

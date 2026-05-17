@@ -1,4 +1,5 @@
 export { run } from "./run.js";
+export { CodexAuthSelectionError } from "./CodexAuth.js";
 export type {
   RunOptions,
   RunResult,
