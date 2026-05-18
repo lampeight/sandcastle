@@ -144,7 +144,7 @@ export interface AgentProvider {
   parseSessionUsage?(content: string): IterationUsage | undefined;
 }
 
-export const DEFAULT_MODEL = "claude-opus-4-6";
+export const DEFAULT_MODEL = "claude-opus-4-7";
 
 // ---------------------------------------------------------------------------
 // Pi agent provider

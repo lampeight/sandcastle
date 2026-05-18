@@ -89,7 +89,7 @@ export interface CreateSandboxOptions {
 }
 
 export interface SandboxRunOptions {
-  /** Agent provider to use (e.g. claudeCode("claude-opus-4-6")). */
+  /** Agent provider to use (e.g. claudeCode("claude-opus-4-7")). */
   readonly agent: AgentProvider;
   /** Inline prompt string (mutually exclusive with promptFile). */
   readonly prompt?: string;
@@ -133,7 +133,7 @@ export interface SandboxRunResult {
 }
 
 export interface SandboxInteractiveOptions {
-  /** Agent provider to use (e.g. claudeCode("claude-opus-4-6")). */
+  /** Agent provider to use (e.g. claudeCode("claude-opus-4-7")). */
   readonly agent: AgentProvider;
   /** Inline prompt string (mutually exclusive with promptFile). */
   readonly prompt?: string;

@@ -3,7 +3,7 @@
  *
  * Usage:
  *   import { podman } from "sandcastle/sandboxes/podman";
- *   await run({ agent: claudeCode("claude-opus-4-6"), sandbox: podman() });
+ *   await run({ agent: claudeCode("claude-opus-4-7"), sandbox: podman() });
  */
 
 import {
