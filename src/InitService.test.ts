@@ -1164,6 +1164,139 @@ describe("InitService scaffold", () => {
     });
   });
 
+  describe("staged-workflow template", () => {
+    it("produces staged workflow files", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "staged-workflow" });
+
+      const configDir = join(dir, ".sandcastle");
+      const { access } = await import("node:fs/promises");
+
+      await expect(
+        access(join(configDir, "main.mts")),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(join(configDir, "plan-prompt.md")),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(join(configDir, "decide-prompt.md")),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(join(configDir, "audit-prompt.md")),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(join(configDir, "issue-contract.md")),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(join(configDir, "auth-selection.mts")),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(join(configDir, "auth-rotation-lock.mts")),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(join(configDir, "codex-auth.mts")),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(join(configDir, "scripts", "run_sandcastle.js")),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(join(configDir, "scripts", "watch_sandcastle_logs.sh")),
+      ).resolves.toBeUndefined();
+    });
+
+    it("main.mts delegates to packaged runStagedWorkflow helper", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "staged-workflow" });
+
+      const mainTs = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      expect(mainTs).toContain("runStagedWorkflow");
+      expect(mainTs).toContain("createAgent");
+      expect(mainTs).toContain("createSandboxProvider");
+      expect(mainTs).toContain("staged-workflow.config.mts");
+      expect(mainTs).toContain("controlMode");
+      expect(mainTs).toContain("maxIssuesPerPass");
+      expect(mainTs).toContain("tmuxWindowOptions");
+      expect(mainTs).toContain("copyToWorktree: localConfig?.copyToWorktree");
+    });
+
+    it("staged-workflow scaffolds a local config example", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "staged-workflow" });
+
+      const example = await readFile(
+        join(dir, ".sandcastle", "staged-workflow.config.mts.example"),
+        "utf-8",
+      );
+      expect(example).toContain("createAgent");
+      expect(example).toContain("preflight");
+      expect(example).toContain("promptArgs");
+      expect(example).toContain("maxIssuesPerPass");
+      expect(example).toContain('controlMode = "work-first"');
+      expect(example).toContain("buildUsageSelectionSnapshot");
+      expect(example).toContain("tmuxWindowOptions");
+      expect(example).toContain('"pane-border-status": "top"');
+      expect(example).toContain("copyToWorktree");
+      expect(example).toContain("issueContractFile");
+      expect(example).toContain("SANDCASTLE_AUTH_SELECTION_MODE");
+    });
+
+    it("staged-workflow codex scaffold keeps hostAuth inside createAgent", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, {
+        templateName: "staged-workflow",
+        agent: codexAgent,
+        model: codexAgent.defaultModel,
+      });
+
+      const mainTs = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      expect(mainTs).toContain(
+        "localConfig?.createAgent ?? ((model) => sandcastle.codex(model, { hostAuth: true }))",
+      );
+      expect(mainTs).not.toContain(
+        "localConfig?.createAgent ?? ((model) => sandcastle.codex(model), { hostAuth: true })",
+      );
+    });
+
+    it("audit prompt uses audit-specific close command", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, {
+        templateName: "staged-workflow",
+        backlogManager: getBacklogManager("gitlab"),
+      });
+
+      const prompt = await readFile(
+        join(dir, ".sandcastle", "audit-prompt.md"),
+        "utf-8",
+      );
+      expect(prompt).toContain("glab issue close");
+      expect(prompt).not.toContain("glab issue note");
+      expect(prompt).not.toContain("{{AUDIT_CLOSE_TASK_COMMAND}}");
+    });
+
+    it("issue-contract.md is scaffolded as the canonical matrix file", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "staged-workflow" });
+
+      const contract = await readFile(
+        join(dir, ".sandcastle", "issue-contract.md"),
+        "utf-8",
+      );
+      expect(contract).toContain("single source of truth");
+      expect(contract).toContain("proof obligations");
+    });
+
+    it("staged-workflow appears in listTemplates()", () => {
+      const templates = listTemplates();
+      expect(templates.some((t) => t.name === "staged-workflow")).toBe(true);
+    });
+  });
+
   // --- Backlog manager ---
 
   describe("Backlog manager registry", () => {
@@ -1189,6 +1322,9 @@ describe("InitService scaffold", () => {
       expect(manager!.templateArgs.CLOSE_TASK_COMMAND).toContain(
         "gh issue close",
       );
+      expect(manager!.templateArgs.AUDIT_CLOSE_TASK_COMMAND).toBe(
+        "gh issue close <ID>",
+      );
       expect(manager!.templateArgs.BACKLOG_MANAGER_TOOLS).toContain(
         "GitHub CLI",
       );
@@ -1202,6 +1338,9 @@ describe("InitService scaffold", () => {
       expect(manager!.templateArgs.LIST_TASKS_COMMAND).toBe("bd ready --json");
       expect(manager!.templateArgs.VIEW_TASK_COMMAND).toContain("bd show");
       expect(manager!.templateArgs.CLOSE_TASK_COMMAND).toContain("bd close");
+      expect(manager!.templateArgs.AUDIT_CLOSE_TASK_COMMAND).toBe(
+        "bd close <ID>",
+      );
       expect(manager!.templateArgs.BACKLOG_MANAGER_TOOLS).toContain("beads");
       expect(manager!.templateArgs.BACKLOG_MANAGER_TOOLS).toContain("libicu72");
       expect(manager!.templateArgs.BACKLOG_MANAGER_TOOLS).toContain(
@@ -1224,13 +1363,19 @@ describe("InitService scaffold", () => {
         "glab issue list",
       );
       expect(manager!.templateArgs.LIST_TASKS_COMMAND).toContain(
-        "--label Sandcastle",
+        "--label ready-for-agent",
       );
       expect(manager!.templateArgs.VIEW_TASK_COMMAND).toContain(
         "glab issue view",
       );
       expect(manager!.templateArgs.CLOSE_TASK_COMMAND).toContain(
         "glab issue close -R",
+      );
+      expect(manager!.templateArgs.AUDIT_CLOSE_TASK_COMMAND).toContain(
+        "glab issue close -R",
+      );
+      expect(manager!.templateArgs.AUDIT_CLOSE_TASK_COMMAND).not.toContain(
+        "glab issue note",
       );
       expect(manager!.templateArgs.BACKLOG_MANAGER_TOOLS).toContain(
         "GitLab CLI",

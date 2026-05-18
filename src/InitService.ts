@@ -1,6 +1,6 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SANDBOX_REPO_DIR } from "./SandboxFactory.js";
 
@@ -37,6 +37,11 @@ const TEMPLATES: TemplateMetadata[] = [
     name: "parallel-planner-with-review",
     description:
       "Plans parallelizable issues, executes with per-branch review, merges",
+  },
+  {
+    name: "staged-workflow",
+    description:
+      "Packaged staged workflow with reusable auth/preflight helpers, control flow, review, merge, audit, and tmux observability",
   },
 ];
 
@@ -296,6 +301,7 @@ const BACKLOG_MANAGER_REGISTRY: BacklogManagerEntry[] = [
       LIST_TASKS_COMMAND: `gh issue list --state open --label Sandcastle --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`,
       VIEW_TASK_COMMAND: "gh issue view <ID>",
       CLOSE_TASK_COMMAND: `gh issue close <ID> --comment "Completed by Sandcastle"`,
+      AUDIT_CLOSE_TASK_COMMAND: `gh issue close <ID>`,
       BACKLOG_MANAGER_TOOLS: GITHUB_CLI_TOOLS,
     },
     envExample: `# GitHub personal access token
@@ -312,6 +318,7 @@ GITHUB_REPOSITORY=`,
       LIST_TASKS_COMMAND: "bd ready --json",
       VIEW_TASK_COMMAND: "bd show <ID>",
       CLOSE_TASK_COMMAND: `bd close <ID> "Completed by Sandcastle"`,
+      AUDIT_CLOSE_TASK_COMMAND: `bd close <ID>`,
       BACKLOG_MANAGER_TOOLS: BEADS_TOOLS,
     },
     envExample: "",
@@ -324,6 +331,7 @@ GITHUB_REPOSITORY=`,
       LIST_TASKS_COMMAND: `repo="\${GITLAB_REPO:-$(git remote get-url origin)}"; glab issue list -R "$repo" --label ready-for-agent -O json -P 100`,
       VIEW_TASK_COMMAND: `repo="\${GITLAB_REPO:-$(git remote get-url origin)}"; glab issue view -R "$repo" <ID>`,
       CLOSE_TASK_COMMAND: `sh -lc 'repo="\${GITLAB_REPO:-$(git remote get-url origin)}" && glab issue note -R "$repo" <ID> -m "Completed by Sandcastle" && glab issue close -R "$repo" <ID>'`,
+      AUDIT_CLOSE_TASK_COMMAND: `repo="\${GITLAB_REPO:-$(git remote get-url origin)}"; glab issue close -R "$repo" <ID>`,
       BACKLOG_MANAGER_TOOLS: GITLAB_CLI_TOOLS,
     },
     envExample: `# GitLab personal access token
@@ -521,6 +529,47 @@ const COMPILED_FILE_EXTENSIONS = [
   ".d.mts.map",
 ];
 
+const SOURCE_FILE_EXTENSIONS = [".ts", ".mts", ".tsx"];
+
+const isCompiledTemplateArtifact = (
+  relativePath: string,
+  allRelativePaths: readonly string[],
+): boolean => {
+  const compiledExt = COMPILED_FILE_EXTENSIONS.find((ext) =>
+    relativePath.endsWith(ext),
+  );
+  if (!compiledExt) return false;
+  const stem = relativePath.slice(0, -compiledExt.length);
+  return SOURCE_FILE_EXTENSIONS.some((ext) =>
+    allRelativePaths.includes(`${stem}${ext}`),
+  );
+};
+
+const listFilesRecursive = (
+  dir: string,
+): Effect.Effect<string[], Error, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const entries = yield* fs
+      .readDirectory(dir)
+      .pipe(Effect.mapError((e) => new Error(e.message)));
+    const nested = yield* Effect.all(
+      entries.map((entry) =>
+        Effect.gen(function* () {
+          const entryPath = join(dir, entry);
+          const isDir = yield* fs.stat(entryPath).pipe(
+            Effect.map((stat) => stat.type === "Directory"),
+            Effect.catchAll(() => Effect.succeed(false)),
+          );
+          if (!isDir) return [entryPath];
+          return yield* listFilesRecursive(entryPath);
+        }),
+      ),
+      { concurrency: "unbounded" },
+    );
+    return nested.flat();
+  });
+
 const copyTemplateFiles = (
   templateDir: string,
   destDir: string,
@@ -528,22 +577,26 @@ const copyTemplateFiles = (
 ): Effect.Effect<void, Error, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const files = yield* fs
-      .readDirectory(templateDir)
-      .pipe(Effect.mapError((e) => new Error(e.message)));
+    const files = yield* listFilesRecursive(templateDir);
     yield* Effect.all(
       files
+        .map((f) => f.slice(templateDir.length + 1))
         .filter(
           (f) =>
             f !== "template.json" &&
             f !== ".env.example" &&
-            !COMPILED_FILE_EXTENSIONS.some((ext) => f.endsWith(ext)),
+            !isCompiledTemplateArtifact(
+              f,
+              files.map((entry) => entry.slice(templateDir.length + 1)),
+            ),
         )
         .map((f) => {
           const destName = f === "main.mts" ? mainFilename : f;
-          return fs
-            .copyFile(join(templateDir, f), join(destDir, destName))
-            .pipe(Effect.mapError((e) => new Error(e.message)));
+          const destPath = join(destDir, destName);
+          return fs.makeDirectory(dirname(destPath), { recursive: true }).pipe(
+            Effect.flatMap(() => fs.copyFile(join(templateDir, f), destPath)),
+            Effect.mapError((e) => new Error(e.message)),
+          );
         }),
       { concurrency: "unbounded" },
     );
@@ -595,7 +648,11 @@ const rewriteMainTs = (
     );
     if (agent.name === "codex") {
       content = content.replace(
-        /codex\(([^,\n]+)\)/g,
+        /sandcastle\.codex\(([^)]*)\)/g,
+        "sandcastle.codex($1, { hostAuth: true })",
+      );
+      content = content.replace(
+        /(?<!\.)\bcodex\(([^)]*)\)/g,
         "codex($1, { hostAuth: true })",
       );
     }
@@ -615,14 +672,11 @@ const rewritePromptFiles = (
 ): Effect.Effect<void, Error, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const files = yield* fs
-      .readDirectory(configDir)
-      .pipe(Effect.mapError((e) => new Error(e.message)));
+    const files = yield* listFilesRecursive(configDir);
     const mdFiles = files.filter((f) => f.endsWith(".md"));
     yield* Effect.all(
-      mdFiles.map((f) =>
+      mdFiles.map((filePath) =>
         Effect.gen(function* () {
-          const filePath = join(configDir, f);
           const content = yield* fs
             .readFileString(filePath)
             .pipe(Effect.mapError((e) => new Error(e.message)));
@@ -671,14 +725,13 @@ const substituteTemplateArgs = (
 ): Effect.Effect<void, Error, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const files = yield* fs
-      .readDirectory(configDir)
-      .pipe(Effect.mapError((e) => new Error(e.message)));
-    const textFiles = files.filter(isTextFile);
+    const files = yield* listFilesRecursive(configDir);
+    const textFiles = files.filter((filePath) =>
+      isTextFile(basename(filePath)),
+    );
     yield* Effect.all(
-      textFiles.map((f) =>
+      textFiles.map((filePath) =>
         Effect.gen(function* () {
-          const filePath = join(configDir, f);
           let content = yield* fs
             .readFileString(filePath)
             .pipe(Effect.mapError((e) => new Error(e.message)));
@@ -781,6 +834,13 @@ export const scaffold = (
     const templateArgs = {
       ...backlogManager.templateArgs,
       ...projectProfile.templateArgs,
+      DEFAULT_MODEL: model,
+      PLANNER_MODEL: model,
+      DECIDER_MODEL: model,
+      IMPLEMENTER_MODEL: model,
+      REVIEWER_MODEL: model,
+      MERGER_MODEL: model,
+      AUDITOR_MODEL: model,
     };
 
     // Build .env.example from agent + backlog manager env blocks

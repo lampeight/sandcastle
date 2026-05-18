@@ -83,6 +83,13 @@ describe("sandcastle CLI", () => {
     expect(stdout).toContain("--model");
   });
 
+  it("init --help exposes non-interactive selection flags", async () => {
+    const { stdout } = await runCli("init --help", process.cwd());
+    expect(stdout).toContain("--sandbox-provider");
+    expect(stdout).toContain("--backlog-manager");
+    expect(stdout).toContain("--project-profile");
+  });
+
   it("init --template nonexistent produces error listing available templates", async () => {
     const hostDir = await mkdtemp(join(tmpdir(), "cli-host-"));
     await initRepo(hostDir);
@@ -164,6 +171,51 @@ describe("sandcastle CLI", () => {
       const output = stdout + stderr;
       expect(output).toContain("nonexistent");
       expect(output).toContain("claude-code");
+    }
+  });
+
+  it("init --sandbox-provider nonexistent produces error listing available providers", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "cli-host-"));
+    await initRepo(hostDir);
+
+    try {
+      await runCli("init --sandbox-provider nonexistent", hostDir);
+      expect.fail("Expected command to fail");
+    } catch (err: unknown) {
+      const { stdout, stderr } = err as { stdout: string; stderr: string };
+      const output = stdout + stderr;
+      expect(output).toContain("nonexistent");
+      expect(output).toContain("docker");
+    }
+  });
+
+  it("init --backlog-manager nonexistent produces error listing available managers", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "cli-host-"));
+    await initRepo(hostDir);
+
+    try {
+      await runCli("init --backlog-manager nonexistent", hostDir);
+      expect.fail("Expected command to fail");
+    } catch (err: unknown) {
+      const { stdout, stderr } = err as { stdout: string; stderr: string };
+      const output = stdout + stderr;
+      expect(output).toContain("nonexistent");
+      expect(output).toContain("github-issues");
+    }
+  });
+
+  it("init --project-profile nonexistent produces error listing available profiles", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "cli-host-"));
+    await initRepo(hostDir);
+
+    try {
+      await runCli("init --project-profile nonexistent", hostDir);
+      expect.fail("Expected command to fail");
+    } catch (err: unknown) {
+      const { stdout, stderr } = err as { stdout: string; stderr: string };
+      const output = stdout + stderr;
+      expect(output).toContain("nonexistent");
+      expect(output).toContain("node-npm");
     }
   });
 });

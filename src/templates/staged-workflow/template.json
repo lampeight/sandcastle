@@ -1,0 +1,4 @@
+{
+  "name": "staged-workflow",
+  "description": "Packaged staged workflow runtime with reusable auth helpers, configurable control flow, implement, review, merge, audit, and tmux observability"
+}

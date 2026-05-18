@@ -104,6 +104,21 @@ const initModelOption = Options.text("model").pipe(
   Options.optional,
 );
 
+const backlogManagerOption = Options.text("backlog-manager").pipe(
+  Options.withDescription("Backlog manager to use (e.g. github-issues)"),
+  Options.optional,
+);
+
+const projectProfileOption = Options.text("project-profile").pipe(
+  Options.withDescription("Project profile to use (e.g. node-npm, python-uv)"),
+  Options.optional,
+);
+
+const sandboxProviderOption = Options.text("sandbox-provider").pipe(
+  Options.withDescription("Sandbox provider to use (e.g. docker, podman)"),
+  Options.optional,
+);
+
 const initCommand = Command.make(
   "init",
   {
@@ -111,12 +126,18 @@ const initCommand = Command.make(
     template: templateOption,
     agent: agentOption,
     model: initModelOption,
+    backlogManager: backlogManagerOption,
+    projectProfile: projectProfileOption,
+    sandboxProvider: sandboxProviderOption,
   },
   ({
     imageName: imageNameFlag,
     template,
     agent: agentFlag,
     model: modelFlag,
+    backlogManager: backlogManagerFlag,
+    projectProfile: projectProfileFlag,
+    sandboxProvider: sandboxProviderFlag,
   }) =>
     Effect.gen(function* () {
       const d = yield* Display;
@@ -132,6 +153,57 @@ const initCommand = Command.make(
           yield* Effect.fail(
             new InitError({
               message: `Unknown template "${template.value}". Available: ${names}`,
+            }),
+          );
+        }
+      }
+
+      const sandboxProviders = listSandboxProviders();
+      if (sandboxProviderFlag._tag === "Some") {
+        const valid = sandboxProviders.find(
+          (provider) => provider.name === sandboxProviderFlag.value,
+        );
+        if (!valid) {
+          const names = sandboxProviders
+            .map((provider) => provider.name)
+            .join(", ");
+          yield* Effect.fail(
+            new InitError({
+              message: `Unknown sandbox provider "${sandboxProviderFlag.value}". Available: ${names}`,
+            }),
+          );
+        }
+      }
+
+      const backlogManagers = listBacklogManagers();
+      if (backlogManagerFlag._tag === "Some") {
+        const valid = backlogManagers.find(
+          (manager) => manager.name === backlogManagerFlag.value,
+        );
+        if (!valid) {
+          const names = backlogManagers
+            .map((manager) => manager.name)
+            .join(", ");
+          yield* Effect.fail(
+            new InitError({
+              message: `Unknown backlog manager "${backlogManagerFlag.value}". Available: ${names}`,
+            }),
+          );
+        }
+      }
+
+      const projectProfiles = listProjectProfiles();
+      if (projectProfileFlag._tag === "Some") {
+        const valid = projectProfiles.find(
+          (profile) => profile.name === projectProfileFlag.value,
+        );
+        if (!valid) {
+          const names = projectProfiles
+            .map((profile) => profile.name)
+            .join(", ");
+          yield* Effect.fail(
+            new InitError({
+              message: `Unknown project profile "${projectProfileFlag.value}". Available: ${names}`,
             }),
           );
         }
@@ -178,9 +250,12 @@ const initCommand = Command.make(
           : selectedAgent.defaultModel;
 
       // Resolve sandbox provider: interactive select (no default — user must choose)
-      const sandboxProviders = listSandboxProviders();
       let selectedSandboxProvider: SandboxProviderEntry;
-      {
+      if (sandboxProviderFlag._tag === "Some") {
+        selectedSandboxProvider = getSandboxProvider(
+          sandboxProviderFlag.value,
+        )!;
+      } else {
         const selected = yield* Effect.promise(() =>
           clack.select({
             message: "Select a sandbox provider:",
@@ -201,9 +276,10 @@ const initCommand = Command.make(
       }
 
       // Resolve backlog manager: interactive select
-      const backlogManagers = listBacklogManagers();
       let selectedBacklogManager: BacklogManagerEntry;
-      {
+      if (backlogManagerFlag._tag === "Some") {
+        selectedBacklogManager = getBacklogManager(backlogManagerFlag.value)!;
+      } else {
         const selected = yield* Effect.promise(() =>
           clack.select({
             message: "Select a backlog manager:",
@@ -225,9 +301,10 @@ const initCommand = Command.make(
       }
 
       // Resolve project profile: interactive select
-      const projectProfiles = listProjectProfiles();
       let selectedProjectProfile: ProjectProfileEntry;
-      {
+      if (projectProfileFlag._tag === "Some") {
+        selectedProjectProfile = getProjectProfile(projectProfileFlag.value)!;
+      } else {
         const selected = yield* Effect.promise(() =>
           clack.select({
             message: "Select a project profile:",

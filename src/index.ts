@@ -53,6 +53,27 @@ export type {
 } from "./Output.js";
 export { CwdError } from "./resolveCwd.js";
 export { claudeCode, codex, opencode, pi } from "./AgentProvider.js";
+export {
+  parseStagedWorkflowCliArgs,
+  runStagedWorkflow,
+} from "./stagedWorkflow.js";
+export type {
+  StagedWorkflowAgentStage,
+  StagedWorkflowCliOptions,
+  StagedWorkflowControlMode,
+  StagedWorkflowDecision,
+  StagedWorkflowDecisionType,
+  StagedWorkflowExecutionMode,
+  StagedWorkflowIssue,
+  StagedWorkflowModels,
+  StagedWorkflowOptions,
+  StagedWorkflowPreflightContext,
+  StagedWorkflowRunResult,
+  StagedWorkflowStageFiles,
+  StagedWorkflowTmuxLayoutPreset,
+  StagedWorkflowTmuxOptions,
+  StagedWorkflowTmuxPane,
+} from "./stagedWorkflow.js";
 export type {
   AgentProvider,
   AgentCommandOptions,

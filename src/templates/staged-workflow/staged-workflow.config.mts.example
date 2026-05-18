@@ -1,0 +1,104 @@
+// @ts-nocheck
+import * as sandcastle from "@ai-hero/sandcastle";
+import type {
+  AgentProvider,
+  PromptArgs,
+  StagedWorkflowAgentStage,
+  StagedWorkflowPreflightContext,
+  StagedWorkflowTmuxOptions,
+  StagedWorkflowTmuxPane,
+} from "@ai-hero/sandcastle";
+import { clearStaleAuthRotationLock, parseAuthLockTtlMs } from "./auth-rotation-lock.mts";
+import {
+  defaultAuthLockDir,
+  getAuthSelectionMode,
+  makeUsageUserSelector,
+  parseUsageThresholds,
+  printUsageSelection,
+  buildUsageSelectionSnapshot,
+} from "./codex-auth.mts";
+
+// Set SANDCASTLE_AUTH_SELECTION_MODE to round-robin, soft, or strict.
+const MODE = getAuthSelectionMode();
+const STRICT_THRESHOLDS = parseUsageThresholds();
+const AUTH_LOCK_DIR = defaultAuthLockDir();
+const AUTH_LOCK_TTL_MS = parseAuthLockTtlMs(
+  process.env.SANDCASTLE_AUTH_ROTATION_STALE_LOCK_TTL_MS,
+);
+
+const printWorkflowPreflight = (context: StagedWorkflowPreflightContext): void => {
+  console.log("[staged-workflow] preflight");
+  console.log(`- repoDir: ${context.repoDir}`);
+  console.log(`- execution: ${context.execution}`);
+  console.log(`- controlMode: ${context.controlMode}`);
+  console.log(`- maxPasses: ${context.maxPasses}`);
+  console.log(`- maxIssuesPerPass: ${context.maxIssuesPerPass ?? "unbounded"}`);
+  console.log(`- auditEnabled: ${context.auditEnabled}`);
+};
+
+const buildCodexAgent = (
+  model: string,
+  _stage: StagedWorkflowAgentStage,
+): AgentProvider => {
+  if (MODE === "round-robin") {
+    return sandcastle.codex(model, { authRotation: true });
+  }
+
+  return sandcastle.codex(model, {
+    authRotation: {
+      enabled: true,
+      selectUser: makeUsageUserSelector(MODE, {
+        thresholds: STRICT_THRESHOLDS,
+        onStrictFailure: (message) => {
+          throw new sandcastle.CodexAuthSelectionError(message, {
+            fallbackToDefaultUser: false,
+          });
+        },
+      }),
+    },
+  });
+};
+
+export const createAgent = (
+  model: string,
+  stage: StagedWorkflowAgentStage,
+): AgentProvider => buildCodexAgent(model, stage);
+
+export const preflight = async (
+  context: StagedWorkflowPreflightContext,
+): Promise<void> => {
+  printWorkflowPreflight(context);
+  if (
+    clearStaleAuthRotationLock(AUTH_LOCK_DIR, {
+      ttlMs: AUTH_LOCK_TTL_MS,
+    })
+  ) {
+    console.log(`[auth] cleared stale rotation lock: ${AUTH_LOCK_DIR}`);
+  }
+  printUsageSelection(MODE, buildUsageSelectionSnapshot(undefined, STRICT_THRESHOLDS));
+};
+
+export const promptArgs: PromptArgs = {
+  EXAMPLE_REPO_RULE: "Replace this with repo-local guidance.",
+};
+
+export const maxIssuesPerPass = 1;
+export const controlMode = "work-first";
+export const issueContractFile = "./.sandcastle/issue-contract.md";
+export const copyToWorktree: string[] = [];
+
+export const tmuxLayoutPreset = "operator";
+
+export const tmuxSessionOptions: StagedWorkflowTmuxOptions = {
+  "remain-on-exit": "on",
+};
+
+export const tmuxWindowOptions: StagedWorkflowTmuxOptions = {
+  "pane-border-status": "top",
+  "pane-border-format": "#{pane_index}: #{pane_title}",
+  "pane-border-style": "fg=colour8",
+  "pane-active-border-style": "fg=colour14",
+};
+
+export const tmuxPanes: readonly StagedWorkflowTmuxPane[] | undefined =
+  undefined;
