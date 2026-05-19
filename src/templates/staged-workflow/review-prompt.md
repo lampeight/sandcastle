@@ -10,6 +10,20 @@ Review against:
 2. `{{IMPLEMENTATION_RESULT_FILE}}`
 3. The branch diff `git diff {{TARGET_BRANCH}}...{{BRANCH}}`
 
+# ISSUE CONTRACT
+
+{{ISSUE_CONTRACT_MD}}
+
+```json
+{{ISSUE_CONTRACT_JSON}}
+```
+
+# IMPLEMENTATION RESULT
+
+```json
+{{IMPLEMENTATION_RESULT_JSON}}
+```
+
 # CONTEXT
 
 ## Branch diff

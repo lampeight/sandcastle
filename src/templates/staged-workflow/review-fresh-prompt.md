@@ -30,16 +30,7 @@ Do not edit code.
 
 Review only from the contract, implementation result, diff, code, and tests.
 
-Every contract row must be classified:
-
-- `pass`
-- `fail`
-- `partial`
-- `untested`
-
-Approval is forbidden unless every row is `pass`.
-
-Treat missing negative tests for authority, scope, readiness, immutability, blocking, or gating criteria as `untested`.
+Approval is forbidden unless every acceptance row is `pass`.
 
 Do not run `glab issue view` or `glab issue list`.
 
@@ -50,6 +41,6 @@ Before final output, run `git status --short`. It must be clean.
 Output only:
 
 <review_result>
-{"status":"approve|changes_required","summary":"short summary","issue_id":"{{ISSUE_ID}}","contract_version":"v1","matrix":[{"id":"AC1","kind":"acceptance_criterion|blocking_finding|proof_obligation","status":"pass|fail|partial|untested","code_refs":["path:line"],"test_refs":["tests/test_file.py::test_name"],"notes":"short evidence note"}]}
+{"status":"approve|changes_required","summary":"short summary","acceptance":[{"id":"AC-1","status":"pass|fail|unclear","finding":"what is wrong","required_change":"what must change"}],"findings":[{"severity":"blocking|non_blocking","file":"path/to/file","line":123,"issue":"what is wrong and why","suggested_fix":"targeted fix"}]}
 </review_result>
 <promise>COMPLETE</promise>

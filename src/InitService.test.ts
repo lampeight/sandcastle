@@ -1222,6 +1222,11 @@ describe("InitService scaffold", () => {
       expect(mainTs).toContain("defaultStageFiles");
       expect(mainTs).toContain("implementRework");
       expect(mainTs).toContain("reviewRework");
+      expect(mainTs).toContain("taskCommands:");
+      expect(mainTs).toContain("localConfig?.taskCommands?.view ??");
+      expect(mainTs).toContain("gh issue view <ID>");
+      expect(mainTs).toContain("localConfig?.taskCommands?.close ??");
+      expect(mainTs).toContain("gh issue close <ID>");
       expect(mainTs).toContain("copyToWorktree: localConfig?.copyToWorktree");
     });
 
@@ -1246,6 +1251,7 @@ describe("InitService scaffold", () => {
       expect(example).toContain("stageFiles");
       expect(example).toContain("implement-rework-prompt.md");
       expect(example).toContain("review-rework-prompt.md");
+      expect(example).toContain("taskCommands");
       expect(example).toContain("SANDCASTLE_AUTH_SELECTION_MODE");
     });
 

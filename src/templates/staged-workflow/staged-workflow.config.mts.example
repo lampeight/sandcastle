@@ -7,6 +7,7 @@ import type {
   StagedWorkflowModels,
   StagedWorkflowPreflightContext,
   StagedWorkflowStageFiles,
+  StagedWorkflowTaskCommands,
   StagedWorkflowTmuxOptions,
   StagedWorkflowTmuxPane,
 } from "@ai-hero/sandcastle";
@@ -98,6 +99,7 @@ export const stageFiles: Partial<StagedWorkflowStageFiles> = {
   implementRework: "./.sandcastle/implement-rework-prompt.md",
   reviewRework: "./.sandcastle/review-rework-prompt.md",
 };
+export const taskCommands: Partial<StagedWorkflowTaskCommands> = {};
 export const copyToWorktree: string[] = [];
 
 export const tmuxLayoutPreset = "operator";

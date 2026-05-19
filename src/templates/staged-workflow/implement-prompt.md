@@ -8,6 +8,14 @@ Use `{{ISSUE_CONTRACT_FILE}}` as the source of truth for the task.
 Do not rely on partial backlog summaries if they conflict with the issue contract.
 If you fetch live issue context for extra detail, the issue contract still wins.
 
+# ISSUE CONTRACT
+
+{{ISSUE_CONTRACT_MD}}
+
+```json
+{{ISSUE_CONTRACT_JSON}}
+```
+
 Only work on the issue specified.
 
 Work on branch {{BRANCH}}. Make commits and run tests.

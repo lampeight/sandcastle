@@ -20,6 +20,9 @@ For each issue:
 3. If satisfied, note that it is ready for runtime-managed closure
 4. If not satisfied, leave it open and say why
 
+Audit is advisory in the active staged workflow.
+Do not close issues from this stage.
+
 Do not invent new work outside the issue contract.
 
 Once complete, output <promise>COMPLETE</promise>.

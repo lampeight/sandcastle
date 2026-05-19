@@ -70,6 +70,7 @@ export type {
   StagedWorkflowPreflightContext,
   StagedWorkflowRunResult,
   StagedWorkflowStageFiles,
+  StagedWorkflowTaskCommands,
   StagedWorkflowTmuxLayoutPreset,
   StagedWorkflowTmuxOptions,
   StagedWorkflowTmuxPane,

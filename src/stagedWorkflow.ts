@@ -65,6 +65,12 @@ export interface StagedWorkflowStageFiles {
   readonly audit?: string;
 }
 
+export interface StagedWorkflowTaskCommands {
+  readonly view?: string;
+  readonly close?: string;
+  readonly auditClose?: string;
+}
+
 export interface StagedWorkflowCliOptions {
   readonly models: StagedWorkflowModels;
   readonly maxPasses?: number;
@@ -175,6 +181,7 @@ export interface StagedWorkflowOptions {
   readonly planTag?: string;
   readonly decisionTag?: string;
   readonly issueContractFile?: string;
+  readonly taskCommands?: StagedWorkflowTaskCommands;
 }
 
 export interface StagedWorkflowRunIssueResult {
@@ -397,14 +404,6 @@ const issueArtifactPaths = (
   };
 };
 
-const readPromptArg = (
-  promptArgs: PromptArgs | undefined,
-  key: string,
-): string | undefined => {
-  const value = promptArgs?.[key];
-  return typeof value === "string" ? value : undefined;
-};
-
 const replaceTaskPlaceholders = (template: string, issueId: string): string =>
   template
     .replaceAll("<ID>", issueId)
@@ -499,6 +498,10 @@ const renderIssueContractMarkdown = (
     "",
   ].join("\n");
 
+const serializeIssueContractJson = (
+  contract: StagedWorkflowIssueContract,
+): string => `${JSON.stringify(contract, null, 2)}\n`;
+
 export const buildStagedWorkflowIssueContract = (options: {
   readonly issue: StagedWorkflowIssue;
   readonly targetBranch: string;
@@ -532,7 +535,7 @@ const writeIssueContract = async (
   await mkdir(paths.dir, { recursive: true });
   await writeFile(
     paths.issueContractJsonFile,
-    `${JSON.stringify(contract, null, 2)}\n`,
+    serializeIssueContractJson(contract),
     "utf8",
   );
   await writeFile(
@@ -587,6 +590,19 @@ export const parseImplementationResultEnvelope = (
         `implementation_result acceptance ${row.id} has invalid status ${row.status}.`,
       );
     }
+    if (typeof row.evidence !== "string" || row.evidence.trim().length === 0) {
+      throw new Error(
+        `implementation_result acceptance ${row.id} requires non-empty evidence.`,
+      );
+    }
+    if (
+      !Array.isArray(row.files) ||
+      row.files.some((file: unknown) => typeof file !== "string")
+    ) {
+      throw new Error(
+        `implementation_result acceptance ${row.id} requires files[].`,
+      );
+    }
   }
   const missing = [...requiredIds].filter((id) => !seenIds.has(id));
   if (missing.length > 0) {
@@ -596,6 +612,25 @@ export const parseImplementationResultEnvelope = (
   }
   if (!Array.isArray(parsed.commands)) {
     throw new Error("implementation_result.commands must be an array.");
+  }
+  for (const row of parsed.commands) {
+    if (typeof row.command !== "string" || row.command.trim().length === 0) {
+      throw new Error("implementation_result command rows require command.");
+    }
+    if (
+      row.result !== "passed" &&
+      row.result !== "failed" &&
+      row.result !== "not_run"
+    ) {
+      throw new Error(
+        `implementation_result command ${row.command} has invalid result ${String(row.result)}.`,
+      );
+    }
+    if (typeof row.notes !== "string") {
+      throw new Error(
+        `implementation_result command ${row.command} requires notes.`,
+      );
+    }
   }
   return parsed;
 };
@@ -685,6 +720,16 @@ export const parseReviewResultEnvelope = (
         `review_result acceptance ${row.id} has invalid status ${row.status}.`,
       );
     }
+    if (typeof row.finding !== "string") {
+      throw new Error(
+        `review_result acceptance ${row.id} finding must be a string.`,
+      );
+    }
+    if (typeof row.required_change !== "string") {
+      throw new Error(
+        `review_result acceptance ${row.id} required_change must be a string.`,
+      );
+    }
     if (row.status !== "pass") hasNonPassingAcceptance = true;
   }
   const missing = [...requiredIds].filter((id) => !seenIds.has(id));
@@ -696,6 +741,43 @@ export const parseReviewResultEnvelope = (
   const hasBlockingFindings = parsed.findings.some(
     (finding) => finding.severity === "blocking",
   );
+  for (const finding of parsed.findings) {
+    if (
+      finding.severity !== "blocking" &&
+      finding.severity !== "non_blocking"
+    ) {
+      throw new Error(
+        `review_result finding has invalid severity ${String(finding.severity)}.`,
+      );
+    }
+    if (
+      typeof finding.issue !== "string" ||
+      finding.issue.trim().length === 0
+    ) {
+      throw new Error("review_result finding requires issue.");
+    }
+    if (finding.file !== undefined && typeof finding.file !== "string") {
+      throw new Error(
+        "review_result finding file must be a string when present.",
+      );
+    }
+    if (
+      finding.line !== undefined &&
+      (!Number.isInteger(finding.line) || finding.line < 1)
+    ) {
+      throw new Error(
+        "review_result finding line must be a positive integer when present.",
+      );
+    }
+    if (
+      finding.suggested_fix !== undefined &&
+      typeof finding.suggested_fix !== "string"
+    ) {
+      throw new Error(
+        "review_result finding suggested_fix must be a string when present.",
+      );
+    }
+  }
   if (
     parsed.status === "approve" &&
     (hasNonPassingAcceptance || hasBlockingFindings)
@@ -777,15 +859,15 @@ export const parseMergeResultEnvelope = (
 const closeIssueOnHost = async (options: {
   readonly repoDir: string;
   readonly issueId: string;
-  readonly promptArgs?: PromptArgs;
-  readonly auditEnabled: boolean;
+  readonly taskCommands?: StagedWorkflowTaskCommands;
 }): Promise<void> => {
-  const commandTemplate =
-    readPromptArg(
-      options.promptArgs,
-      options.auditEnabled ? "AUDIT_CLOSE_TASK_COMMAND" : "CLOSE_TASK_COMMAND",
-    ) ?? readPromptArg(options.promptArgs, "CLOSE_TASK_COMMAND");
-  if (!commandTemplate) return;
+  const commandTemplate = options.taskCommands?.close;
+  if (!commandTemplate) {
+    console.warn(
+      `[staged-workflow] no close command configured for issue ${options.issueId}; leaving it open.`,
+    );
+    return;
+  }
   await runHostCommand(
     options.repoDir,
     replaceTaskPlaceholders(commandTemplate, options.issueId),
@@ -1276,11 +1358,13 @@ const runIssuePipeline = async (
     ISSUE_ID: issue.id,
     ISSUE_TITLE: issue.title,
     BRANCH: issue.branch,
-    TARGET_BRANCH: targetBranch,
   };
   const backlogContext = await (() => {
-    const commandTemplate = readPromptArg(basePromptArgs, "VIEW_TASK_COMMAND");
+    const commandTemplate = workflow.taskCommands?.view;
     if (!commandTemplate) {
+      console.warn(
+        `[staged-workflow] no view command configured for issue ${issue.id}; using title-only contract fallback.`,
+      );
       return Promise.resolve(`# ${issue.id}: ${issue.title}`);
     }
     return runHostCommand(
@@ -1298,6 +1382,8 @@ const runIssuePipeline = async (
     issue.id,
     issueContract,
   );
+  const issueContractMarkdown = renderIssueContractMarkdown(issueContract);
+  const issueContractJson = serializeIssueContractJson(issueContract);
   const sandbox = await createSandbox({
     branch: issue.branch,
     sandbox: workflow.createSandboxProvider(),
@@ -1311,6 +1397,8 @@ const runIssuePipeline = async (
       ...basePromptArgs,
       ISSUE_CONTRACT_FILE: artifactPaths.issueContractFile,
       ISSUE_CONTRACT_JSON_FILE: artifactPaths.issueContractJsonFile,
+      ISSUE_CONTRACT_MD: issueContractMarkdown,
+      ISSUE_CONTRACT_JSON: issueContractJson,
       IMPLEMENTATION_RESULT_FILE: artifactPaths.implementationResultFile,
       REVIEW_RESULT_FILE: artifactPaths.reviewResultFile,
     };
@@ -1375,8 +1463,14 @@ const runIssuePipeline = async (
           issueContractFile: artifactPaths.issueContractFile,
           promptArgs,
         });
-        const effectiveIssueContractFile =
-          preparedIssue?.issueContractFile ?? artifactPaths.issueContractFile;
+        if (
+          preparedIssue?.issueContractFile !== undefined &&
+          preparedIssue.issueContractFile !== artifactPaths.issueContractFile
+        ) {
+          throw new Error(
+            "prepareIssue may not replace the generated issue contract file.",
+          );
+        }
         const priorImplementationResultJson = await readFileIfPresent(
           artifactPaths.implementationResultFile,
         );
@@ -1386,8 +1480,10 @@ const runIssuePipeline = async (
         const effectivePromptArgs: PromptArgs = {
           ...promptArgs,
           ...preparedIssue?.promptArgs,
-          ISSUE_CONTRACT_FILE: effectiveIssueContractFile,
+          ISSUE_CONTRACT_FILE: artifactPaths.issueContractFile,
           ISSUE_CONTRACT_JSON_FILE: artifactPaths.issueContractJsonFile,
+          ISSUE_CONTRACT_MD: issueContractMarkdown,
+          ISSUE_CONTRACT_JSON: issueContractJson,
           IMPLEMENTATION_RESULT_FILE: artifactPaths.implementationResultFile,
           REVIEW_RESULT_FILE: artifactPaths.reviewResultFile,
           IMPLEMENTATION_RESULT_JSON: priorImplementationResultJson,
@@ -1801,8 +1897,7 @@ export const runStagedWorkflow = async (
       await closeIssueOnHost({
         repoDir,
         issueId: issue.id,
-        promptArgs: runtimeOptions.promptArgs,
-        auditEnabled,
+        taskCommands: runtimeOptions.taskCommands,
       });
     }
   }

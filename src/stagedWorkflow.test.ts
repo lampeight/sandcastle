@@ -214,6 +214,54 @@ describe("staged workflow contract and result helpers", () => {
     ).toThrow("implementation_result missing acceptance rows: AC-2");
   });
 
+  it("rejects implementation_result rows with missing evidence", () => {
+    expect(() =>
+      parseImplementationResultEnvelope(
+        `<implementation_result>${JSON.stringify({
+          status: "complete",
+          summary: "done",
+          acceptance: contract.acceptanceCriteria.map((criterion) => ({
+            id: criterion.id,
+            status: "done",
+            evidence: "",
+            files: ["src/stagedWorkflow.ts"],
+          })),
+          commands: [],
+        })}</implementation_result>`,
+        contract,
+      ),
+    ).toThrow(
+      "implementation_result acceptance AC-1 requires non-empty evidence.",
+    );
+  });
+
+  it("rejects implementation_result command rows with invalid result", () => {
+    expect(() =>
+      parseImplementationResultEnvelope(
+        `<implementation_result>${JSON.stringify({
+          status: "complete",
+          summary: "done",
+          acceptance: contract.acceptanceCriteria.map((criterion) => ({
+            id: criterion.id,
+            status: "done",
+            evidence: "covered",
+            files: ["src/stagedWorkflow.ts"],
+          })),
+          commands: [
+            {
+              command: "npm test",
+              result: "green",
+              notes: "bad enum",
+            },
+          ],
+        })}</implementation_result>`,
+        contract,
+      ),
+    ).toThrow(
+      "implementation_result command npm test has invalid result green.",
+    );
+  });
+
   it("parses a valid review_result envelope", () => {
     const result = parseReviewResultEnvelope(
       `<review_result>${JSON.stringify({
@@ -262,6 +310,33 @@ describe("staged workflow contract and result helpers", () => {
     );
   });
 
+  it("rejects review findings with invalid severity", () => {
+    expect(() =>
+      parseReviewResultEnvelope(
+        `<review_result>${JSON.stringify({
+          status: "changes_required",
+          summary: "bad severity",
+          acceptance: contract.acceptanceCriteria.map((criterion) => ({
+            id: criterion.id,
+            status: "fail",
+            finding: "needs work",
+            required_change: "fix it",
+          })),
+          findings: [
+            {
+              severity: "critical",
+              file: "src/stagedWorkflow.ts",
+              line: 123,
+              issue: "wrong severity enum",
+              suggested_fix: "use blocking",
+            },
+          ],
+        })}</review_result>`,
+        contract,
+      ),
+    ).toThrow("review_result finding has invalid severity critical.");
+  });
+
   it("parses merge_result envelopes", () => {
     const result = parseMergeResultEnvelope(
       `<merge_result>${JSON.stringify({
@@ -289,6 +364,34 @@ describe("staged workflow prompt templates", () => {
     expect(prompt).not.toContain("glab issue close");
   });
 
+  it("inlines contract and result content into active staged prompts", async () => {
+    const [implementPrompt, reviewPrompt, reworkPrompt] = await Promise.all([
+      readFile(
+        join(
+          process.cwd(),
+          "src/templates/staged-workflow/implement-prompt.md",
+        ),
+        "utf8",
+      ),
+      readFile(
+        join(process.cwd(), "src/templates/staged-workflow/review-prompt.md"),
+        "utf8",
+      ),
+      readFile(
+        join(
+          process.cwd(),
+          "src/templates/staged-workflow/review-rework-prompt.md",
+        ),
+        "utf8",
+      ),
+    ]);
+
+    expect(implementPrompt).toContain("{{ISSUE_CONTRACT_MD}}");
+    expect(implementPrompt).toContain("{{ISSUE_CONTRACT_JSON}}");
+    expect(reviewPrompt).toContain("{{IMPLEMENTATION_RESULT_JSON}}");
+    expect(reworkPrompt).toContain("{{PREVIOUS_REVIEW_RESULT_JSON}}");
+  });
+
   it("uses TARGET_BRANCH for parallel planner review diffs", async () => {
     const prompt = await readFile(
       join(
@@ -300,6 +403,17 @@ describe("staged workflow prompt templates", () => {
 
     expect(prompt).toContain("git diff {{TARGET_BRANCH}}...{{BRANCH}}");
     expect(prompt).toContain("git log {{TARGET_BRANCH}}..{{BRANCH}}");
+  });
+
+  it("uses runtime taskCommands and does not inject TARGET_BRANCH into promptArgs", async () => {
+    const source = await readFile(
+      join(process.cwd(), "src/stagedWorkflow.ts"),
+      "utf8",
+    );
+
+    expect(source).toContain("workflow.taskCommands?.view");
+    expect(source).toContain("taskCommands: runtimeOptions.taskCommands");
+    expect(source).not.toContain("TARGET_BRANCH: targetBranch");
   });
 });
 

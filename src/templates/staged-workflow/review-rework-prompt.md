@@ -10,6 +10,26 @@ Do not edit code.
 - Latest implementation result: `{{IMPLEMENTATION_RESULT_FILE}}`
 - Prior review result: `{{REVIEW_RESULT_FILE}}`
 
+# ISSUE CONTRACT
+
+{{ISSUE_CONTRACT_MD}}
+
+```json
+{{ISSUE_CONTRACT_JSON}}
+```
+
+# IMPLEMENTATION RESULT
+
+```json
+{{IMPLEMENTATION_RESULT_JSON}}
+```
+
+# PREVIOUS REVIEW RESULT
+
+```json
+{{PREVIOUS_REVIEW_RESULT_JSON}}
+```
+
 # DIFF
 
 !`git diff {{TARGET_BRANCH}}...{{BRANCH}}`

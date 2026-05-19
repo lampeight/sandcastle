@@ -9,6 +9,7 @@ import type {
   StagedWorkflowModels,
   StagedWorkflowPreflightContext,
   StagedWorkflowStageFiles,
+  StagedWorkflowTaskCommands,
   StagedWorkflowTmuxLayoutPreset,
   StagedWorkflowTmuxOptions,
   StagedWorkflowTmuxPane,
@@ -41,6 +42,7 @@ type LocalStagedWorkflowConfig = {
   auditEnabled?: boolean;
   issueContractFile?: string;
   stageFiles?: Partial<StagedWorkflowStageFiles>;
+  taskCommands?: Partial<StagedWorkflowTaskCommands>;
   copyToWorktree?: string[];
   tmuxLayoutPreset?: StagedWorkflowTmuxLayoutPreset;
   tmuxPanes?: readonly StagedWorkflowTmuxPane[];
@@ -107,6 +109,13 @@ await sandcastle.runStagedWorkflow({
   auditEnabled: localConfig?.auditEnabled ?? false,
   issueContractFile:
     localConfig?.issueContractFile ?? "./.sandcastle/issue-contract.md",
+  taskCommands: {
+    view: localConfig?.taskCommands?.view ?? "{{VIEW_TASK_COMMAND}}",
+    close: localConfig?.taskCommands?.close ?? "{{CLOSE_TASK_COMMAND}}",
+    auditClose:
+      localConfig?.taskCommands?.auditClose ??
+      "{{AUDIT_CLOSE_TASK_COMMAND}}",
+  },
   tmuxLayoutPreset: localConfig?.tmuxLayoutPreset,
   tmuxPanes: localConfig?.tmuxPanes,
   tmuxSessionOptions: localConfig?.tmuxSessionOptions,
