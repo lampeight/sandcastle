@@ -8,6 +8,7 @@ import type {
   StagedWorkflowPrepareIssueContext,
   StagedWorkflowModels,
   StagedWorkflowPreflightContext,
+  StagedWorkflowStageFiles,
   StagedWorkflowTmuxLayoutPreset,
   StagedWorkflowTmuxOptions,
   StagedWorkflowTmuxPane,
@@ -39,6 +40,7 @@ type LocalStagedWorkflowConfig = {
   synthesisAfterReviewPass?: number;
   auditEnabled?: boolean;
   issueContractFile?: string;
+  stageFiles?: Partial<StagedWorkflowStageFiles>;
   copyToWorktree?: string[];
   tmuxLayoutPreset?: StagedWorkflowTmuxLayoutPreset;
   tmuxPanes?: readonly StagedWorkflowTmuxPane[];
@@ -66,6 +68,17 @@ const loadLocalConfig = async (): Promise<
 };
 
 const localConfig = await loadLocalConfig();
+const defaultStageFiles: StagedWorkflowStageFiles = {
+  plan: "./.sandcastle/plan-prompt.md",
+  decide: "./.sandcastle/decide-prompt.md",
+  implement: "./.sandcastle/implement-prompt.md",
+  implementRework: "./.sandcastle/implement-rework-prompt.md",
+  synthesize: "./.sandcastle/implement-synthesis-prompt.md",
+  review: "./.sandcastle/review-prompt.md",
+  reviewRework: "./.sandcastle/review-rework-prompt.md",
+  merge: "./.sandcastle/merge-prompt.md",
+  audit: "./.sandcastle/audit-prompt.md",
+};
 const defaultModels: StagedWorkflowModels = {
   default: "{{DEFAULT_MODEL}}",
   planner: "{{PLANNER_MODEL}}",
@@ -98,14 +111,6 @@ await sandcastle.runStagedWorkflow({
   tmuxPanes: localConfig?.tmuxPanes,
   tmuxSessionOptions: localConfig?.tmuxSessionOptions,
   tmuxWindowOptions: localConfig?.tmuxWindowOptions,
-  stageFiles: {
-    plan: "./.sandcastle/plan-prompt.md",
-    decide: "./.sandcastle/decide-prompt.md",
-    implement: "./.sandcastle/implement-prompt.md",
-    synthesize: "./.sandcastle/implement-synthesis-prompt.md",
-    review: "./.sandcastle/review-prompt.md",
-    merge: "./.sandcastle/merge-prompt.md",
-    audit: "./.sandcastle/audit-prompt.md",
-  },
+  stageFiles: { ...defaultStageFiles, ...localConfig?.stageFiles },
   models: { ...defaultModels, ...localConfig?.models },
 });

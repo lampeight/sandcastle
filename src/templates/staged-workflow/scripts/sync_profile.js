@@ -17,8 +17,11 @@ export const PROFILE_FILES = [
   "codex-auth.mts",
   "contract-audit.mts",
   "contract-results.mts",
+  "decide-prompt.md",
   "implement-prompt.md",
+  "implement-rework-prompt.md",
   "issue-contract.mts",
+  "issue-contract.md",
   "issue-follow-up.mts",
   "issue-parent-refs.mts",
   "main.mts",
@@ -27,8 +30,10 @@ export const PROFILE_FILES = [
   "repo-audit.mts",
   "result-envelope.mts",
   "review-prompt.md",
+  "review-rework-prompt.md",
   "run-state.mts",
   "smoke.mts",
+  "staged-workflow.config.mts.example",
   "startup-prune.mts",
 ];
 

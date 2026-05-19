@@ -1,36 +1,22 @@
 # TASK
 
-Review rework branch `{{SOURCE_BRANCH}}` for issue #{{ISSUE_ID}}.
+Review rework branch `{{BRANCH}}` for issue #{{ISSUE_ID}}.
 
 Do not edit code.
 
-# ISSUE CONTRACT
+# REVIEW INPUTS
 
-{{ISSUE_CONTRACT_MD}}
-
-```json
-{{ISSUE_CONTRACT_JSON}}
-```
-
-# IMPLEMENTATION RESULT
-
-```json
-{{IMPLEMENTATION_RESULT_JSON}}
-```
-
-# PRIOR FAILED REVIEW
-
-```json
-{{PREVIOUS_REVIEW_RESULT_JSON}}
-```
+- Issue contract: `{{ISSUE_CONTRACT_FILE}}`
+- Latest implementation result: `{{IMPLEMENTATION_RESULT_FILE}}`
+- Prior review result: `{{REVIEW_RESULT_FILE}}`
 
 # DIFF
 
-!`git diff {{TARGET_BRANCH}}...{{SOURCE_BRANCH}}`
+!`git diff {{TARGET_BRANCH}}...{{BRANCH}}`
 
 # COMMITS
 
-!`git log {{TARGET_BRANCH}}..{{SOURCE_BRANCH}} --oneline`
+!`git log {{TARGET_BRANCH}}..{{BRANCH}} --oneline`
 
 # REVIEW RULES
 
@@ -49,6 +35,6 @@ Before final output, run `git status --short`. It must be clean.
 Output only:
 
 <review_result>
-{"status":"approve|changes_required","summary":"short summary","issue_id":"{{ISSUE_ID}}","contract_version":"v1","matrix":[{"id":"AC1","kind":"acceptance_criterion|blocking_finding|proof_obligation","status":"pass|fail|partial|untested","code_refs":["path:line"],"test_refs":["tests/test_file.py::test_name"],"notes":"short evidence note"}]}
+{"status":"approve|changes_required","summary":"short summary","acceptance":[{"id":"AC-1","status":"pass|fail|unclear","finding":"what is wrong","required_change":"what must change"}],"findings":[{"severity":"blocking|non_blocking","file":"path/to/file","line":123,"issue":"what is wrong and why","suggested_fix":"targeted fix"}]}
 </review_result>
 <promise>COMPLETE</promise>

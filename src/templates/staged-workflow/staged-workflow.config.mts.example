@@ -6,6 +6,7 @@ import type {
   StagedWorkflowAgentStage,
   StagedWorkflowModels,
   StagedWorkflowPreflightContext,
+  StagedWorkflowStageFiles,
   StagedWorkflowTmuxOptions,
   StagedWorkflowTmuxPane,
 } from "@ai-hero/sandcastle";
@@ -93,6 +94,10 @@ export const models: Partial<StagedWorkflowModels> = {
   synthesizer: "gpt-5.5",
 };
 export const issueContractFile = "./.sandcastle/issue-contract.md";
+export const stageFiles: Partial<StagedWorkflowStageFiles> = {
+  implementRework: "./.sandcastle/implement-rework-prompt.md",
+  reviewRework: "./.sandcastle/review-rework-prompt.md",
+};
 export const copyToWorktree: string[] = [];
 
 export const tmuxLayoutPreset = "operator";

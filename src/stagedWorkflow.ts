@@ -1,4 +1,4 @@
-import { mkdir, symlink, unlink } from "node:fs/promises";
+import { mkdir, readFile, symlink, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -57,8 +57,10 @@ export interface StagedWorkflowStageFiles {
   readonly plan: string;
   readonly decide?: string;
   readonly implement: string;
+  readonly implementRework?: string;
   readonly synthesize?: string;
   readonly review: string;
+  readonly reviewRework?: string;
   readonly merge: string;
   readonly audit?: string;
 }
@@ -179,6 +181,7 @@ export interface StagedWorkflowRunIssueResult {
   readonly issue: StagedWorkflowIssue;
   readonly decision: StagedWorkflowDecision;
   readonly commits: readonly { sha: string }[];
+  readonly mergeReady: boolean;
   readonly shouldAudit: boolean;
 }
 
@@ -300,61 +303,494 @@ const extractLastTag = (stdout: string, tag: string): string => {
 const parseTaggedJson = <T>(stdout: string, tag: string): T =>
   JSON.parse(extractLastTag(stdout, tag)) as T;
 
-const ensureReviewResult = (
-  stdout: string,
-): {
-  status: "approve" | "changes_required";
-  summary: string;
-  findings: Array<{
-    title?: string;
-    details?: string;
-    code_refs?: string[];
-  }>;
-} => {
-  const parsed = parseTaggedJson<{
-    status?: unknown;
-    summary?: unknown;
-    findings?: unknown;
-    matrix?: unknown;
-  }>(stdout, "review_result");
-  if (parsed.status !== "approve" && parsed.status !== "changes_required") {
-    throw new Error(
-      `Unknown review status "${String(parsed.status)}". Expected "approve" or "changes_required".`,
-    );
-  }
-  const findings = Array.isArray(parsed.findings)
-    ? parsed.findings
-    : Array.isArray(parsed.matrix)
-      ? parsed.matrix
-          .filter(
-            (
-              row,
-            ): row is {
-              id?: unknown;
-              status?: unknown;
-              notes?: unknown;
-              code_refs?: unknown;
-            } =>
-              typeof row === "object" && row !== null && row.status !== "pass",
-          )
-          .map((row) => ({
-            title: typeof row.id === "string" ? row.id : "Review finding",
-            details: typeof row.notes === "string" ? row.notes : "",
-            code_refs: Array.isArray(row.code_refs)
-              ? row.code_refs.filter(
-                  (entry): entry is string => typeof entry === "string",
-                )
-              : [],
-          }))
-      : [];
+type IssueContractAcceptanceCriterion = {
+  id: string;
+  text: string;
+};
+
+export interface StagedWorkflowIssueContract {
+  readonly issue: {
+    readonly id: string;
+    readonly title: string;
+    readonly branch: string;
+    readonly targetBranch: string;
+  };
+  readonly backlogContext: string;
+  readonly acceptanceCriteria: readonly IssueContractAcceptanceCriterion[];
+  readonly constraints: {
+    readonly inScope: readonly string[];
+    readonly outOfScope: readonly string[];
+    readonly relevantFiles: readonly string[];
+    readonly knownDependencies: readonly string[];
+  };
+}
+
+export interface StagedWorkflowImplementationResult {
+  readonly status: "complete" | "blocked";
+  readonly summary: string;
+  readonly acceptance: readonly {
+    readonly id: string;
+    readonly status: "done" | "not_done" | "not_applicable";
+    readonly evidence: string;
+    readonly files: readonly string[];
+  }[];
+  readonly commands: readonly {
+    readonly command: string;
+    readonly result: "passed" | "failed" | "not_run";
+    readonly notes: string;
+  }[];
+}
+
+export interface StagedWorkflowReviewResult {
+  readonly status: "approve" | "changes_required";
+  readonly summary: string;
+  readonly acceptance: readonly {
+    readonly id: string;
+    readonly status: "pass" | "fail" | "unclear";
+    readonly finding: string;
+    readonly required_change: string;
+  }[];
+  readonly findings: readonly {
+    readonly severity: "blocking" | "non_blocking";
+    readonly file: string;
+    readonly line: number;
+    readonly issue: string;
+    readonly suggested_fix: string;
+  }[];
+}
+
+export interface StagedWorkflowMergeResult {
+  readonly status: "merged" | "merge_failed";
+  readonly summary: string;
+  readonly target_branch: string;
+  readonly merged_issues?: readonly {
+    readonly issue_id: string;
+    readonly branch: string;
+  }[];
+  readonly commit?: string;
+  readonly error?: string;
+}
+
+type StagedWorkflowIssueArtifactPaths = {
+  readonly dir: string;
+  readonly issueContractFile: string;
+  readonly issueContractJsonFile: string;
+  readonly implementationResultFile: string;
+  readonly implementationResultMarkdownFile: string;
+  readonly reviewResultFile: string;
+  readonly reviewResultMarkdownFile: string;
+};
+
+const issueArtifactPaths = (
+  repoDir: string,
+  issueId: string,
+): StagedWorkflowIssueArtifactPaths => {
+  const dir = join(repoDir, ".sandcastle", "staged", issueId);
   return {
-    status: parsed.status,
-    summary: typeof parsed.summary === "string" ? parsed.summary : "",
-    findings,
+    dir,
+    issueContractFile: join(dir, "issue-contract.md"),
+    issueContractJsonFile: join(dir, "issue-contract.json"),
+    implementationResultFile: join(dir, "implementation-result.json"),
+    implementationResultMarkdownFile: join(dir, "implementation-result.md"),
+    reviewResultFile: join(dir, "review-result.json"),
+    reviewResultMarkdownFile: join(dir, "review-result.md"),
   };
 };
 
-type StagedWorkflowReviewResult = ReturnType<typeof ensureReviewResult>;
+const readPromptArg = (
+  promptArgs: PromptArgs | undefined,
+  key: string,
+): string | undefined => {
+  const value = promptArgs?.[key];
+  return typeof value === "string" ? value : undefined;
+};
+
+const replaceTaskPlaceholders = (template: string, issueId: string): string =>
+  template
+    .replaceAll("<ID>", issueId)
+    .replaceAll("{{TASK_ID}}", issueId)
+    .replaceAll("{{ISSUE_ID}}", issueId);
+
+const runHostCommand = async (
+  repoDir: string,
+  command: string,
+): Promise<string> => {
+  const { stdout } = await execFile("/bin/bash", ["-lc", command], {
+    cwd: repoDir,
+  });
+  return stdout.trim();
+};
+
+const getTargetBranch = async (repoDir: string): Promise<string> => {
+  const branch = await runHostCommand(repoDir, "git branch --show-current");
+  return branch || "HEAD";
+};
+
+const extractSectionBullets = (
+  text: string,
+  headings: readonly string[],
+): string[] => {
+  const lines = text.split("\n");
+  const normalized = headings.map((heading) => heading.toLowerCase());
+  const values: string[] = [];
+  let active = false;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (/^#{1,6}\s+/.test(line)) {
+      const title = line
+        .replace(/^#{1,6}\s+/, "")
+        .trim()
+        .toLowerCase();
+      active = normalized.includes(title);
+      continue;
+    }
+    if (!active) continue;
+    if (/^#{1,6}\s+/.test(line)) break;
+    const match = line.match(/^[-*]\s+(?:\[[ xX]\]\s+)?(.+)$/);
+    if (match?.[1]) values.push(match[1].trim());
+  }
+  return values;
+};
+
+const deriveAcceptanceCriteria = (
+  backlogContext: string,
+  issueTitle: string,
+): IssueContractAcceptanceCriterion[] => {
+  const bulletLines = extractSectionBullets(backlogContext, [
+    "acceptance criteria",
+    "acceptance",
+    "definition of done",
+    "done when",
+  ]);
+  const criteria = bulletLines.length > 0 ? bulletLines : [issueTitle];
+  return criteria.map((text, index) => ({
+    id: `AC-${index + 1}`,
+    text,
+  }));
+};
+
+const renderIssueContractMarkdown = (
+  contract: StagedWorkflowIssueContract,
+): string =>
+  [
+    "# Issue Contract",
+    "",
+    "## Issue",
+    `- ID: ${contract.issue.id}`,
+    `- Title: ${contract.issue.title}`,
+    `- Branch: ${contract.issue.branch}`,
+    `- Target branch: ${contract.issue.targetBranch}`,
+    "",
+    "## Backlog context",
+    contract.backlogContext.trim() || "(none)",
+    "",
+    "## Acceptance criteria",
+    ...(contract.acceptanceCriteria.length > 0
+      ? contract.acceptanceCriteria.map(
+          (criterion) => `- [ ] ${criterion.id}: ${criterion.text}`,
+        )
+      : ["- [ ] AC-1: No acceptance criteria captured."]),
+    "",
+    "## Implementation constraints",
+    `- In scope: ${contract.constraints.inScope.join(", ") || "(none captured)"}`,
+    `- Out of scope: ${contract.constraints.outOfScope.join(", ") || "(none captured)"}`,
+    `- Relevant files/modules: ${contract.constraints.relevantFiles.join(", ") || "(none captured)"}`,
+    `- Known dependencies: ${contract.constraints.knownDependencies.join(", ") || "(none captured)"}`,
+    "",
+  ].join("\n");
+
+export const buildStagedWorkflowIssueContract = (options: {
+  readonly issue: StagedWorkflowIssue;
+  readonly targetBranch: string;
+  readonly backlogContext: string;
+}): StagedWorkflowIssueContract => ({
+  issue: {
+    id: options.issue.id,
+    title: options.issue.title,
+    branch: options.issue.branch,
+    targetBranch: options.targetBranch,
+  },
+  backlogContext: options.backlogContext.trim(),
+  acceptanceCriteria: deriveAcceptanceCriteria(
+    options.backlogContext,
+    options.issue.title,
+  ),
+  constraints: {
+    inScope: [],
+    outOfScope: [],
+    relevantFiles: [],
+    knownDependencies: [],
+  },
+});
+
+const writeIssueContract = async (
+  repoDir: string,
+  issueId: string,
+  contract: StagedWorkflowIssueContract,
+): Promise<StagedWorkflowIssueArtifactPaths> => {
+  const paths = issueArtifactPaths(repoDir, issueId);
+  await mkdir(paths.dir, { recursive: true });
+  await writeFile(
+    paths.issueContractJsonFile,
+    `${JSON.stringify(contract, null, 2)}\n`,
+    "utf8",
+  );
+  await writeFile(
+    paths.issueContractFile,
+    renderIssueContractMarkdown(contract),
+    "utf8",
+  );
+  return paths;
+};
+
+const readFileIfPresent = async (path: string): Promise<string> => {
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return "";
+  }
+};
+
+export const parseImplementationResultEnvelope = (
+  stdout: string,
+  contract: StagedWorkflowIssueContract,
+): StagedWorkflowImplementationResult => {
+  const parsed = parseTaggedJson<StagedWorkflowImplementationResult>(
+    stdout,
+    "implementation_result",
+  );
+  if (parsed.status !== "complete" && parsed.status !== "blocked") {
+    throw new Error(
+      "implementation_result.status must be complete or blocked.",
+    );
+  }
+  if (!Array.isArray(parsed.acceptance)) {
+    throw new Error("implementation_result.acceptance must be an array.");
+  }
+  const requiredIds = new Set(
+    contract.acceptanceCriteria.map((criterion) => criterion.id),
+  );
+  const seenIds = new Set<string>();
+  for (const row of parsed.acceptance) {
+    if (!requiredIds.has(row.id)) {
+      throw new Error(
+        `implementation_result contains unknown acceptance id ${row.id}.`,
+      );
+    }
+    seenIds.add(row.id);
+    if (
+      row.status !== "done" &&
+      row.status !== "not_done" &&
+      row.status !== "not_applicable"
+    ) {
+      throw new Error(
+        `implementation_result acceptance ${row.id} has invalid status ${row.status}.`,
+      );
+    }
+  }
+  const missing = [...requiredIds].filter((id) => !seenIds.has(id));
+  if (missing.length > 0) {
+    throw new Error(
+      `implementation_result missing acceptance rows: ${missing.join(", ")}`,
+    );
+  }
+  if (!Array.isArray(parsed.commands)) {
+    throw new Error("implementation_result.commands must be an array.");
+  }
+  return parsed;
+};
+
+const renderImplementationResultMarkdown = (
+  result: StagedWorkflowImplementationResult,
+): string =>
+  [
+    "# Implementation Result",
+    "",
+    `Status: ${result.status}`,
+    "",
+    "## Summary",
+    result.summary || "(none)",
+    "",
+    "## Acceptance",
+    ...(result.acceptance.length > 0
+      ? result.acceptance.map(
+          (row) =>
+            `- ${row.id}: ${row.status}${row.evidence ? ` - ${row.evidence}` : ""}`,
+        )
+      : ["- none"]),
+    "",
+    "## Commands",
+    ...(result.commands.length > 0
+      ? result.commands.map(
+          (row) =>
+            `- ${row.command}: ${row.result}${row.notes ? ` - ${row.notes}` : ""}`,
+        )
+      : ["- none"]),
+    "",
+  ].join("\n");
+
+const writeImplementationResult = async (
+  paths: StagedWorkflowIssueArtifactPaths,
+  result: StagedWorkflowImplementationResult,
+): Promise<void> => {
+  await writeFile(
+    paths.implementationResultFile,
+    `${JSON.stringify(result, null, 2)}\n`,
+    "utf8",
+  );
+  await writeFile(
+    paths.implementationResultMarkdownFile,
+    renderImplementationResultMarkdown(result),
+    "utf8",
+  );
+};
+
+export const parseReviewResultEnvelope = (
+  stdout: string,
+  contract: StagedWorkflowIssueContract,
+): StagedWorkflowReviewResult => {
+  const parsed = parseTaggedJson<StagedWorkflowReviewResult>(
+    stdout,
+    "review_result",
+  );
+  if (parsed.status !== "approve" && parsed.status !== "changes_required") {
+    throw new Error(
+      "review_result.status must be approve or changes_required.",
+    );
+  }
+  if (!Array.isArray(parsed.acceptance)) {
+    throw new Error("review_result.acceptance must be an array.");
+  }
+  if (!Array.isArray(parsed.findings)) {
+    throw new Error("review_result.findings must be an array.");
+  }
+  const requiredIds = new Set(
+    contract.acceptanceCriteria.map((criterion) => criterion.id),
+  );
+  const seenIds = new Set<string>();
+  let hasNonPassingAcceptance = false;
+  for (const row of parsed.acceptance) {
+    if (!requiredIds.has(row.id)) {
+      throw new Error(
+        `review_result contains unknown acceptance id ${row.id}.`,
+      );
+    }
+    seenIds.add(row.id);
+    if (
+      row.status !== "pass" &&
+      row.status !== "fail" &&
+      row.status !== "unclear"
+    ) {
+      throw new Error(
+        `review_result acceptance ${row.id} has invalid status ${row.status}.`,
+      );
+    }
+    if (row.status !== "pass") hasNonPassingAcceptance = true;
+  }
+  const missing = [...requiredIds].filter((id) => !seenIds.has(id));
+  if (missing.length > 0) {
+    throw new Error(
+      `review_result missing acceptance rows: ${missing.join(", ")}`,
+    );
+  }
+  const hasBlockingFindings = parsed.findings.some(
+    (finding) => finding.severity === "blocking",
+  );
+  if (
+    parsed.status === "approve" &&
+    (hasNonPassingAcceptance || hasBlockingFindings)
+  ) {
+    throw new Error(
+      "review_result approved work with failing acceptance rows or blocking findings.",
+    );
+  }
+  if (
+    parsed.status === "changes_required" &&
+    !hasNonPassingAcceptance &&
+    !hasBlockingFindings
+  ) {
+    throw new Error(
+      "review_result requested changes without failing acceptance rows or blocking findings.",
+    );
+  }
+  return parsed;
+};
+
+const renderReviewResultMarkdown = (
+  result: StagedWorkflowReviewResult,
+): string =>
+  [
+    "# Review Result",
+    "",
+    `Status: ${result.status}`,
+    "",
+    "## Summary",
+    result.summary || "(none)",
+    "",
+    "## Acceptance",
+    ...(result.acceptance.length > 0
+      ? result.acceptance.map(
+          (row) =>
+            `- ${row.id}: ${row.status}${row.finding ? ` - ${row.finding}` : ""}`,
+        )
+      : ["- none"]),
+    "",
+    "## Findings",
+    ...(result.findings.length > 0
+      ? result.findings.map(
+          (finding) =>
+            `- ${finding.severity}: ${finding.file}:${finding.line} ${finding.issue}`,
+        )
+      : ["- none"]),
+    "",
+  ].join("\n");
+
+const writeReviewResult = async (
+  paths: StagedWorkflowIssueArtifactPaths,
+  result: StagedWorkflowReviewResult,
+): Promise<void> => {
+  await writeFile(
+    paths.reviewResultFile,
+    `${JSON.stringify(result, null, 2)}\n`,
+    "utf8",
+  );
+  await writeFile(
+    paths.reviewResultMarkdownFile,
+    renderReviewResultMarkdown(result),
+    "utf8",
+  );
+};
+
+export const parseMergeResultEnvelope = (
+  stdout: string,
+): StagedWorkflowMergeResult => {
+  const parsed = parseTaggedJson<StagedWorkflowMergeResult>(
+    stdout,
+    "merge_result",
+  );
+  if (parsed.status !== "merged" && parsed.status !== "merge_failed") {
+    throw new Error("merge_result.status must be merged or merge_failed.");
+  }
+  return parsed;
+};
+
+const closeIssueOnHost = async (options: {
+  readonly repoDir: string;
+  readonly issueId: string;
+  readonly promptArgs?: PromptArgs;
+  readonly auditEnabled: boolean;
+}): Promise<void> => {
+  const commandTemplate =
+    readPromptArg(
+      options.promptArgs,
+      options.auditEnabled ? "AUDIT_CLOSE_TASK_COMMAND" : "CLOSE_TASK_COMMAND",
+    ) ?? readPromptArg(options.promptArgs, "CLOSE_TASK_COMMAND");
+  if (!commandTemplate) return;
+  await runHostCommand(
+    options.repoDir,
+    replaceTaskPlaceholders(commandTemplate, options.issueId),
+  );
+};
 
 const formatReviewFeedback = (
   reviewPass: number,
@@ -363,15 +799,16 @@ const formatReviewFeedback = (
   [
     `Review pass ${reviewPass} requires changes.`,
     reviewResult.summary ? `Summary: ${reviewResult.summary}` : "",
-    ...reviewResult.findings.map((finding, index) => {
-      const details =
-        typeof finding?.details === "string" ? finding.details : "";
-      const refs =
-        Array.isArray(finding?.code_refs) && finding.code_refs.length > 0
-          ? ` [${finding.code_refs.join(", ")}]`
-          : "";
-      return `Finding ${index + 1}: ${String(finding?.title ?? "Untitled finding")}${refs}${details ? ` - ${details}` : ""}`;
-    }),
+    ...reviewResult.acceptance
+      .filter((row) => row.status !== "pass")
+      .map(
+        (row, index) =>
+          `Acceptance ${index + 1}: ${row.id} ${row.status}${row.finding ? ` - ${row.finding}` : ""}${row.required_change ? ` | Required: ${row.required_change}` : ""}`,
+      ),
+    ...reviewResult.findings.map(
+      (finding, index) =>
+        `Finding ${index + 1}: ${finding.severity} ${finding.file}:${finding.line} - ${finding.issue}${finding.suggested_fix ? ` | Fix: ${finding.suggested_fix}` : ""}`,
+    ),
   ]
     .filter(Boolean)
     .join("\n");
@@ -831,6 +1268,36 @@ const runIssuePipeline = async (
   synthesisAfterReviewPass: number | undefined,
   pass: number,
 ): Promise<StagedWorkflowRunIssueResult> => {
+  const repoDir = workflow.repoDir ?? process.cwd();
+  const targetBranch = await getTargetBranch(repoDir);
+  const basePromptArgs: PromptArgs = {
+    ...workflow.promptArgs,
+    TASK_ID: issue.id,
+    ISSUE_ID: issue.id,
+    ISSUE_TITLE: issue.title,
+    BRANCH: issue.branch,
+    TARGET_BRANCH: targetBranch,
+  };
+  const backlogContext = await (() => {
+    const commandTemplate = readPromptArg(basePromptArgs, "VIEW_TASK_COMMAND");
+    if (!commandTemplate) {
+      return Promise.resolve(`# ${issue.id}: ${issue.title}`);
+    }
+    return runHostCommand(
+      repoDir,
+      replaceTaskPlaceholders(commandTemplate, issue.id),
+    );
+  })();
+  const issueContract = buildStagedWorkflowIssueContract({
+    issue,
+    targetBranch,
+    backlogContext,
+  });
+  const artifactPaths = await writeIssueContract(
+    repoDir,
+    issue.id,
+    issueContract,
+  );
   const sandbox = await createSandbox({
     branch: issue.branch,
     sandbox: workflow.createSandboxProvider(),
@@ -841,13 +1308,12 @@ const runIssuePipeline = async (
 
   try {
     const promptArgs: PromptArgs = {
-      ...workflow.promptArgs,
-      TASK_ID: issue.id,
-      ISSUE_TITLE: issue.title,
-      BRANCH: issue.branch,
+      ...basePromptArgs,
+      ISSUE_CONTRACT_FILE: artifactPaths.issueContractFile,
+      ISSUE_CONTRACT_JSON_FILE: artifactPaths.issueContractJsonFile,
+      IMPLEMENTATION_RESULT_FILE: artifactPaths.implementationResultFile,
+      REVIEW_RESULT_FILE: artifactPaths.reviewResultFile,
     };
-    const defaultIssueContractFile =
-      workflow.issueContractFile ?? "./.sandcastle/issue-contract.md";
 
     const decision: StagedWorkflowDecision =
       controlMode === "proof-first"
@@ -893,6 +1359,7 @@ const runIssuePipeline = async (
       let reviewFeedback = "";
       const reviewHistory: string[] = [];
       let synthesisUsed = false;
+      let mergeReady = false;
       for (let reviewPass = 1; reviewPass <= MAX_REVIEW_PASSES; reviewPass++) {
         const issueMode: StagedWorkflowIssueMode =
           reviewPass === 1 ? "fresh" : "review_rework";
@@ -905,15 +1372,27 @@ const runIssuePipeline = async (
           mode: issueMode,
           reviewPass,
           reviewFeedback: reviewFeedback || undefined,
-          issueContractFile: defaultIssueContractFile,
+          issueContractFile: artifactPaths.issueContractFile,
           promptArgs,
         });
         const effectiveIssueContractFile =
-          preparedIssue?.issueContractFile ?? defaultIssueContractFile;
+          preparedIssue?.issueContractFile ?? artifactPaths.issueContractFile;
+        const priorImplementationResultJson = await readFileIfPresent(
+          artifactPaths.implementationResultFile,
+        );
+        const priorReviewResultJson = await readFileIfPresent(
+          artifactPaths.reviewResultFile,
+        );
         const effectivePromptArgs: PromptArgs = {
           ...promptArgs,
           ...preparedIssue?.promptArgs,
           ISSUE_CONTRACT_FILE: effectiveIssueContractFile,
+          ISSUE_CONTRACT_JSON_FILE: artifactPaths.issueContractJsonFile,
+          IMPLEMENTATION_RESULT_FILE: artifactPaths.implementationResultFile,
+          REVIEW_RESULT_FILE: artifactPaths.reviewResultFile,
+          IMPLEMENTATION_RESULT_JSON: priorImplementationResultJson,
+          PREVIOUS_REVIEW_RESULT_JSON: priorReviewResultJson,
+          REVIEW_FINDINGS_JSON: priorReviewResultJson,
         };
         const useSynthesis =
           synthesisAfterReviewPass !== undefined &&
@@ -936,10 +1415,8 @@ const runIssuePipeline = async (
             ? workflow.stageFiles.synthesize!
             : reviewPass === 1
               ? workflow.stageFiles.implement
-              : workflow.stageFiles.implement.replace(
-                  "implement-prompt.md",
-                  "implement-rework-prompt.md",
-                ),
+              : (workflow.stageFiles.implementRework ??
+                workflow.stageFiles.implement),
           promptArgs: {
             ...effectivePromptArgs,
             ISSUE_ID: issue.id,
@@ -961,6 +1438,30 @@ const runIssuePipeline = async (
         if (useSynthesis) {
           synthesisUsed = true;
         }
+        let implementationResult: StagedWorkflowImplementationResult;
+        try {
+          implementationResult = parseImplementationResultEnvelope(
+            implement.stdout,
+            issueContract,
+          );
+          await writeImplementationResult(artifactPaths, implementationResult);
+        } catch (error) {
+          reviewFeedback = `Implementer returned invalid implementation_result envelope: ${error instanceof Error ? error.message : String(error)}`;
+          reviewHistory.push(reviewFeedback);
+          if (reviewPass === MAX_REVIEW_PASSES) {
+            throw new Error(reviewFeedback);
+          }
+          continue;
+        }
+        if (implementationResult.status === "blocked") {
+          return {
+            issue,
+            decision,
+            commits,
+            mergeReady: false,
+            shouldAudit: false,
+          };
+        }
 
         const reviewerModel = stageModel(models, "reviewer");
         logStageModel(
@@ -973,7 +1474,11 @@ const runIssuePipeline = async (
           model: reviewerModel,
           maxIterations: 1,
           agent: workflow.createAgent(reviewerModel, "reviewer"),
-          promptFile: workflow.stageFiles.review,
+          promptFile:
+            reviewPass === 1
+              ? workflow.stageFiles.review
+              : (workflow.stageFiles.reviewRework ??
+                workflow.stageFiles.review),
           promptArgs: {
             ...effectivePromptArgs,
             ISSUE_ID: issue.id,
@@ -993,8 +1498,23 @@ const runIssuePipeline = async (
             `Reviewer must not commit code for issue ${issue.id}.`,
           );
         }
-        const reviewResult = ensureReviewResult(review.stdout);
+        let reviewResult: StagedWorkflowReviewResult;
+        try {
+          reviewResult = parseReviewResultEnvelope(
+            review.stdout,
+            issueContract,
+          );
+          await writeReviewResult(artifactPaths, reviewResult);
+        } catch (error) {
+          reviewFeedback = `Reviewer returned invalid review_result envelope: ${error instanceof Error ? error.message : String(error)}`;
+          reviewHistory.push(reviewFeedback);
+          if (reviewPass === MAX_REVIEW_PASSES) {
+            throw new Error(reviewFeedback);
+          }
+          continue;
+        }
         if (reviewResult.status === "approve") {
+          mergeReady = true;
           break;
         }
         const formattedFeedback = formatReviewFeedback(
@@ -1023,12 +1543,21 @@ const runIssuePipeline = async (
         }
         reviewFeedback = formattedFeedback;
       }
+
+      return {
+        issue,
+        decision,
+        commits,
+        mergeReady,
+        shouldAudit: mergeReady,
+      };
     }
 
     return {
       issue,
       decision,
       commits,
+      mergeReady: false,
       shouldAudit: decision.type !== "blocked",
     };
   } finally {
@@ -1041,11 +1570,11 @@ const runMerge = async (
   models: StagedWorkflowModels,
   mergedIssues: readonly StagedWorkflowIssue[],
   pass: number,
-): Promise<void> => {
-  if (mergedIssues.length === 0) return;
+): Promise<readonly StagedWorkflowIssue[]> => {
+  if (mergedIssues.length === 0) return [];
   const model = stageModel(models, "merger");
   logStageModel("merger", model, `(pass ${pass})`);
-  await run({
+  const mergeRun = await run({
     sandbox: workflow.createSandboxProvider(),
     hooks: workflow.hooks,
     cwd: workflow.repoDir,
@@ -1068,6 +1597,22 @@ const runMerge = async (
       ),
     },
   });
+  const mergeResult = parseMergeResultEnvelope(mergeRun.stdout);
+  if (mergeResult.status !== "merged") {
+    throw new Error(
+      mergeResult.error || mergeResult.summary || "Merge failed.",
+    );
+  }
+  if (
+    Array.isArray(mergeResult.merged_issues) &&
+    mergeResult.merged_issues.length > 0
+  ) {
+    const mergedIds = new Set(
+      mergeResult.merged_issues.map((entry) => entry.issue_id),
+    );
+    return mergedIssues.filter((issue) => mergedIds.has(issue.id));
+  }
+  return mergedIssues;
 };
 
 const runAudit = async (
@@ -1227,7 +1772,7 @@ export const runStagedWorkflow = async (
     processedIssues.push(...passResults);
 
     const mergeable = passResults
-      .filter((entry) => entry.commits.length > 0)
+      .filter((entry) => entry.mergeReady && entry.commits.length > 0)
       .map((entry) => entry.issue);
 
     if (mergeable.length === 0 && !auditEnabled) {
@@ -1235,8 +1780,13 @@ export const runStagedWorkflow = async (
       break;
     }
 
-    await runMerge(runtimeOptions, models, mergeable, pass);
-    mergedIssues.push(...mergeable);
+    const mergedThisPass = await runMerge(
+      runtimeOptions,
+      models,
+      mergeable,
+      pass,
+    );
+    mergedIssues.push(...mergedThisPass);
 
     if (auditEnabled) {
       await runAudit(
@@ -1245,6 +1795,15 @@ export const runStagedWorkflow = async (
         passResults.filter((entry) => entry.shouldAudit),
         pass,
       );
+    }
+
+    for (const issue of mergedThisPass) {
+      await closeIssueOnHost({
+        repoDir,
+        issueId: issue.id,
+        promptArgs: runtimeOptions.promptArgs,
+        auditEnabled,
+      });
     }
   }
 

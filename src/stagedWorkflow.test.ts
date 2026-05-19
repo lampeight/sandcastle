@@ -1,7 +1,13 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  buildStagedWorkflowIssueContract,
   getStagedWorkflowTmuxPanes,
   makeStagedWorkflowRunId,
+  parseImplementationResultEnvelope,
+  parseMergeResultEnvelope,
+  parseReviewResultEnvelope,
   parseStagedWorkflowCliArgs,
   resolveStagedWorkflowRuntimePaths,
   runStagedWorkflow,
@@ -132,6 +138,168 @@ describe("runStagedWorkflow", () => {
       mergedIssues: [],
       logFile: undefined,
     });
+  });
+});
+
+describe("staged workflow contract and result helpers", () => {
+  const contract = buildStagedWorkflowIssueContract({
+    issue: {
+      id: "123",
+      title: "Keep staged workflow simple",
+      branch: "issue-123",
+    },
+    targetBranch: "main",
+    backlogContext: `# Issue 123
+
+## Acceptance criteria
+- reviewer sees the real diff
+- implementer and reviewer share the same contract`,
+  });
+
+  it("builds a lightweight contract with extracted acceptance criteria", () => {
+    expect(contract.issue.targetBranch).toBe("main");
+    expect(contract.acceptanceCriteria).toEqual([
+      { id: "AC-1", text: "reviewer sees the real diff" },
+      {
+        id: "AC-2",
+        text: "implementer and reviewer share the same contract",
+      },
+    ]);
+  });
+
+  it("parses a valid implementation_result envelope", () => {
+    const result = parseImplementationResultEnvelope(
+      `<implementation_result>${JSON.stringify({
+        status: "complete",
+        summary: "done",
+        acceptance: contract.acceptanceCriteria.map((criterion) => ({
+          id: criterion.id,
+          status: "done",
+          evidence: "covered",
+          files: ["src/stagedWorkflow.ts"],
+        })),
+        commands: [
+          {
+            command: "npm test",
+            result: "passed",
+            notes: "ok",
+          },
+        ],
+      })}</implementation_result>`,
+      contract,
+    );
+
+    expect(result.status).toBe("complete");
+    expect(result.acceptance).toHaveLength(2);
+  });
+
+  it("rejects implementation_result when a contract row is missing", () => {
+    expect(() =>
+      parseImplementationResultEnvelope(
+        `<implementation_result>${JSON.stringify({
+          status: "complete",
+          summary: "done",
+          acceptance: [
+            {
+              id: "AC-1",
+              status: "done",
+              evidence: "covered",
+              files: ["src/stagedWorkflow.ts"],
+            },
+          ],
+          commands: [],
+        })}</implementation_result>`,
+        contract,
+      ),
+    ).toThrow("implementation_result missing acceptance rows: AC-2");
+  });
+
+  it("parses a valid review_result envelope", () => {
+    const result = parseReviewResultEnvelope(
+      `<review_result>${JSON.stringify({
+        status: "approve",
+        summary: "looks good",
+        acceptance: contract.acceptanceCriteria.map((criterion) => ({
+          id: criterion.id,
+          status: "pass",
+          finding: "",
+          required_change: "",
+        })),
+        findings: [],
+      })}</review_result>`,
+      contract,
+    );
+
+    expect(result.status).toBe("approve");
+  });
+
+  it("rejects review approval with a blocking finding", () => {
+    expect(() =>
+      parseReviewResultEnvelope(
+        `<review_result>${JSON.stringify({
+          status: "approve",
+          summary: "not actually good",
+          acceptance: contract.acceptanceCriteria.map((criterion) => ({
+            id: criterion.id,
+            status: "pass",
+            finding: "",
+            required_change: "",
+          })),
+          findings: [
+            {
+              severity: "blocking",
+              file: "src/stagedWorkflow.ts",
+              line: 123,
+              issue: "wrong diff base",
+              suggested_fix: "use TARGET_BRANCH",
+            },
+          ],
+        })}</review_result>`,
+        contract,
+      ),
+    ).toThrow(
+      "review_result approved work with failing acceptance rows or blocking findings.",
+    );
+  });
+
+  it("parses merge_result envelopes", () => {
+    const result = parseMergeResultEnvelope(
+      `<merge_result>${JSON.stringify({
+        status: "merged",
+        summary: "merged issue 123",
+        target_branch: "main",
+        merged_issues: [{ issue_id: "123", branch: "issue-123" }],
+      })}</merge_result>`,
+    );
+
+    expect(result.status).toBe("merged");
+    expect(result.merged_issues?.[0]?.issue_id).toBe("123");
+  });
+});
+
+describe("staged workflow prompt templates", () => {
+  it("uses TARGET_BRANCH for staged review diffs and no longer closes issues in review", async () => {
+    const prompt = await readFile(
+      join(process.cwd(), "src/templates/staged-workflow/review-prompt.md"),
+      "utf8",
+    );
+
+    expect(prompt).toContain("git diff {{TARGET_BRANCH}}...{{BRANCH}}");
+    expect(prompt).toContain("git log {{TARGET_BRANCH}}..{{BRANCH}}");
+    expect(prompt).not.toContain("glab issue close");
+  });
+
+  it("uses TARGET_BRANCH for parallel planner review diffs", async () => {
+    const prompt = await readFile(
+      join(
+        process.cwd(),
+        "src/templates/parallel-planner-with-review/review-prompt.md",
+      ),
+      "utf8",
+    );
+
+    expect(prompt).toContain("git diff {{TARGET_BRANCH}}...{{BRANCH}}");
+    expect(prompt).toContain("git log {{TARGET_BRANCH}}..{{BRANCH}}");
   });
 });
 

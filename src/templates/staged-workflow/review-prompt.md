@@ -4,15 +4,21 @@ Review the code changes on branch `{{BRANCH}}` for issue `{{TASK_ID}}`.
 
 You are a gate, not an implementer.
 
+Review against:
+
+1. `{{ISSUE_CONTRACT_FILE}}`
+2. `{{IMPLEMENTATION_RESULT_FILE}}`
+3. The branch diff `git diff {{TARGET_BRANCH}}...{{BRANCH}}`
+
 # CONTEXT
 
 ## Branch diff
 
-!`git diff {{SOURCE_BRANCH}}...{{BRANCH}}`
+!`git diff {{TARGET_BRANCH}}...{{BRANCH}}`
 
 ## Commits on this branch
 
-!`git log {{SOURCE_BRANCH}}..{{BRANCH}} --oneline`
+!`git log {{TARGET_BRANCH}}..{{BRANCH}} --oneline`
 
 # REVIEW PROCESS
 
@@ -32,14 +38,11 @@ Do not commit.
 If the implementation is correct and sufficiently proven, approve it.
 If not, require changes and hand clear findings back to the implementer.
 
-If you approve the work, close the GitLab issue before final output:
-`repo="${GITLAB_REPO:-$(git remote get-url origin)}"; glab issue close -R "$repo" {{TASK_ID}}`
-
 Before final output, run `git status --short`. It must be clean.
 
 Output exactly this structure:
 
 <review_result>
-{"status":"approve|changes_required","summary":"short summary","findings":[{"severity":"high|medium|low","title":"short title","details":"what is wrong and why","code_refs":["path:line"],"acceptance_criteria":["copied or paraphrased AC"]}]}
+{"status":"approve|changes_required","summary":"short summary","acceptance":[{"id":"AC-1","status":"pass|fail|unclear","finding":"what is wrong","required_change":"what must change"}],"findings":[{"severity":"blocking|non_blocking","file":"path/to/file","line":123,"issue":"what is wrong and why","suggested_fix":"targeted fix"}]}
 </review_result>
 <promise>COMPLETE</promise>

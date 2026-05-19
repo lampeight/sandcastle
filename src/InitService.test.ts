@@ -1149,7 +1149,7 @@ describe("InitService scaffold", () => {
       expect(prompt).toContain("@.sandcastle/CODING_STANDARDS.md");
     });
 
-    it("review-prompt.md uses {{SOURCE_BRANCH}} instead of hardcoded main", async () => {
+    it("review-prompt.md uses {{TARGET_BRANCH}} instead of hardcoded main", async () => {
       const dir = await makeDir();
       await runScaffold(dir, { templateName: "parallel-planner-with-review" });
 
@@ -1157,8 +1157,8 @@ describe("InitService scaffold", () => {
         join(dir, ".sandcastle", "review-prompt.md"),
         "utf-8",
       );
-      expect(prompt).toContain("git diff {{SOURCE_BRANCH}}...{{BRANCH}}");
-      expect(prompt).toContain("git log {{SOURCE_BRANCH}}..{{BRANCH}}");
+      expect(prompt).toContain("git diff {{TARGET_BRANCH}}...{{BRANCH}}");
+      expect(prompt).toContain("git log {{TARGET_BRANCH}}..{{BRANCH}}");
       expect(prompt).not.toContain("git diff main");
       expect(prompt).not.toContain("git log main");
     });
@@ -1219,6 +1219,9 @@ describe("InitService scaffold", () => {
       expect(mainTs).toContain("controlMode");
       expect(mainTs).toContain("maxIssuesPerPass");
       expect(mainTs).toContain("tmuxWindowOptions");
+      expect(mainTs).toContain("defaultStageFiles");
+      expect(mainTs).toContain("implementRework");
+      expect(mainTs).toContain("reviewRework");
       expect(mainTs).toContain("copyToWorktree: localConfig?.copyToWorktree");
     });
 
@@ -1240,6 +1243,9 @@ describe("InitService scaffold", () => {
       expect(example).toContain('"pane-border-status": "top"');
       expect(example).toContain("copyToWorktree");
       expect(example).toContain("issueContractFile");
+      expect(example).toContain("stageFiles");
+      expect(example).toContain("implement-rework-prompt.md");
+      expect(example).toContain("review-rework-prompt.md");
       expect(example).toContain("SANDCASTLE_AUTH_SELECTION_MODE");
     });
 
@@ -1263,7 +1269,7 @@ describe("InitService scaffold", () => {
       );
     });
 
-    it("audit prompt uses audit-specific close command", async () => {
+    it("audit prompt leaves issue closure to the runtime", async () => {
       const dir = await makeDir();
       await runScaffold(dir, {
         templateName: "staged-workflow",
@@ -1274,8 +1280,8 @@ describe("InitService scaffold", () => {
         join(dir, ".sandcastle", "audit-prompt.md"),
         "utf-8",
       );
-      expect(prompt).toContain("glab issue close");
-      expect(prompt).not.toContain("glab issue note");
+      expect(prompt).toContain("runtime-managed closure");
+      expect(prompt).not.toContain("glab issue close");
       expect(prompt).not.toContain("{{AUDIT_CLOSE_TASK_COMMAND}}");
     });
 
@@ -1288,7 +1294,9 @@ describe("InitService scaffold", () => {
         "utf-8",
       );
       expect(contract).toContain("single source of truth");
-      expect(contract).toContain("proof obligations");
+      expect(contract).toContain(
+        ".sandcastle/staged/<issue-id>/issue-contract.md",
+      );
     });
 
     it("staged-workflow appears in listTemplates()", () => {

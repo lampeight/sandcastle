@@ -17,4 +17,9 @@ Here are the issues covered by this merge:
 
 {{ISSUES}}
 
-Once complete, output <promise>COMPLETE</promise>.
+Output only:
+
+<merge_result>
+{"status":"merged|merge_failed","summary":"short summary","target_branch":"target-branch","merged_issues":[{"issue_id":"123","branch":"feature/123"}],"commit":"optional merge commit sha","error":"set only on merge_failed"}
+</merge_result>
+<promise>COMPLETE</promise>
