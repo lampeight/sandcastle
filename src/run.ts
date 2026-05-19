@@ -114,6 +114,7 @@ export const buildLogFilename = (
 export interface RunSummaryRowsOptions {
   readonly name?: string;
   readonly agentName: string;
+  readonly model?: string;
   readonly sandboxName: string;
   readonly maxIterations: number;
   readonly branch: string;
@@ -126,12 +127,18 @@ export interface RunSummaryRowsOptions {
  */
 export const buildRunSummaryRows = (
   options: RunSummaryRowsOptions,
-): Record<string, string> => ({
-  Agent: options.name ?? options.agentName,
-  Sandbox: options.sandboxName,
-  "Max iterations": String(options.maxIterations),
-  Branch: options.branch,
-});
+): Record<string, string> => {
+  const rows: Record<string, string> = {
+    Agent: options.name ?? options.agentName,
+  };
+  if (options.model !== undefined) {
+    rows.Model = options.model;
+  }
+  rows.Sandbox = options.sandboxName;
+  rows["Max iterations"] = String(options.maxIterations);
+  rows.Branch = options.branch;
+  return rows;
+};
 
 /**
  * Build the completion status message for a run, used in both terminal mode
@@ -244,6 +251,8 @@ export interface RunOptions {
   readonly idleTimeoutSeconds?: number;
   /** Optional name for the run, shown as a prefix in log output */
   readonly name?: string;
+  /** Optional resolved model label, shown in run logs for observability. */
+  readonly model?: string;
   /** Paths relative to the host repo root to copy into the worktree before sandbox start. */
   readonly copyToWorktree?: string[];
   /** Branch strategy — controls how the agent's changes relate to branches.
@@ -504,6 +513,7 @@ export async function run(
     const rows = buildRunSummaryRows({
       name: options.name,
       agentName,
+      model: options.model,
       sandboxName: options.sandbox.name,
       maxIterations,
       branch: resolvedBranch,

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Effect } from "effect";
 import {
@@ -38,6 +38,7 @@ export const copyToWorktree = (
         continue;
       }
       const dest = join(worktreePath, relativePath);
+      rmSync(dest, { recursive: true, force: true });
       yield* Effect.async<void, CopyToWorktreeError>((resume) => {
         execFile("cp", [...cowFlags, src, dest], (error) => {
           if (error) {

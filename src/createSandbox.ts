@@ -105,6 +105,8 @@ export interface SandboxRunOptions {
   readonly idleTimeoutSeconds?: number;
   /** Display name for this run. */
   readonly name?: string;
+  /** Optional resolved model label, shown in run logs for observability. */
+  readonly model?: string;
   /** Logging mode. */
   readonly logging?: LoggingOption;
   /**
@@ -327,6 +329,15 @@ const buildSandboxHandle = (
           Effect.gen(function* () {
             const display = yield* Display;
             yield* display.intro(runOptions.name ?? "sandcastle");
+            const rows: Record<string, string> = {
+              Agent: runOptions.name ?? provider.name,
+            };
+            if (runOptions.model !== undefined) {
+              rows.Model = runOptions.model;
+            }
+            rows["Max iterations"] = String(maxIterations);
+            rows.Branch = branch;
+            yield* display.summary("Sandcastle Run", rows);
 
             return yield* orchestrate({
               hostRepoDir,

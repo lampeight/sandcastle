@@ -1,28 +1,25 @@
 # TASK
 
-Rework issue #{{ISSUE_ID}} from the current Issue Contract and prior failed review rows.
+Rework issue {{ISSUE_ID}}: {{ISSUE_TITLE}}
 
-You are not implementing from scratch. Kill the failed rows first.
+You are not implementing from scratch. Kill the reviewer findings first.
 
-# ISSUE PACKET
+Read @{{ISSUE_CONTRACT_FILE}} before editing.
+That file may live under hidden `.sandcastle/`.
 
-```json
-{{ISSUE_PACKET_JSON}}
-```
+Only work on the issue specified.
 
-# ISSUE CONTRACT
+Work on branch {{BRANCH}}. Make commits and run tests.
 
-{{ISSUE_CONTRACT_MD}}
+# CONTEXT
 
-```json
-{{ISSUE_CONTRACT_JSON}}
-```
+Here are the last 10 commits:
 
-# PRIOR FAILED REVIEW
+<recent-commits>
 
-```json
-{{PREVIOUS_REVIEW_RESULT_JSON}}
-```
+!`git log -n 10 --format="%H%n%ad%n%B---" --date=short`
+
+</recent-commits>
 
 # REVIEW FEEDBACK
 
@@ -30,21 +27,24 @@ You are not implementing from scratch. Kill the failed rows first.
 
 # EXECUTION
 
-Before editing, identify the contract rows you are repairing.
+Before editing, identify the specific reviewer findings you are repairing.
 
-Only inspect adjacent code needed for those rows. Do not reread broad PRD context unless the failed row explicitly requires it.
+Only inspect adjacent code needed for those findings.
+Do not restart broad discovery.
+Do not refetch issue context with `glab issue view` or `glab issue list`.
 
-Do not run `glab issue view` or `glab issue list`. This sandbox is a sealed execution inbox.
+Use the smallest useful RED/GREEN loop.
 
-Make a git commit. The commit message must start with `Sandcastle:`.
+# FEEDBACK LOOPS
 
-Before final output, run `git status --short`. It must be clean.
+Before committing, run `{{TARGETED_VERIFY_COMMAND}}` and then `{{BROAD_VERIFY_COMMAND}}`.
 
-# FINAL OUTPUT
+# COMMIT
 
-Output only:
+Make a git commit. Keep it concise and include issue context.
 
-<implementation_result>
-{"status":"complete|incomplete","issue_id":"{{ISSUE_ID}}","contract_version":"v1","matrix":[{"id":"AC1","kind":"acceptance_criterion|blocking_finding|proof_obligation","status":"claimed_satisfied|not_addressed|disputed","code_refs":["path:line"],"test_refs":["tests/test_file.py::test_name"],"notes":"short proof note"}],"verification_commands":["command run"],"known_gaps":[]}
-</implementation_result>
-<promise>COMPLETE</promise>
+Once complete, output <promise>COMPLETE</promise>.
+
+# FINAL RULES
+
+ONLY WORK ON A SINGLE TASK.

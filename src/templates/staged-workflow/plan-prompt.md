@@ -4,11 +4,11 @@ Here are the open issues in the repo:
 
 <issues-json>
 
-!`{{LIST_TASKS_COMMAND}}`
+!`node ./.sandcastle/scripts/list_ready_issues.js`
 
 </issues-json>
 
-The list above has already been filtered to issues ready for work.
+The list above has already been filtered to issues ready for work and annotated with blocker state.
 
 # TASK
 
@@ -18,8 +18,9 @@ Rules:
 
 1. Find the best issue or issues to progress right now.
 2. Respect dependencies and likely merge-conflict overlap.
-3. Prefer a small set of issues that can be advanced safely this pass.
-4. Each issue must include a branch name using `sandcastle/issue-{id}-{slug}`.
+3. Treat `ready_now: true` as eligible now. Do not skip an issue just because its body still contains `Blocked by` if all listed blockers are closed.
+4. Prefer a small set of issues that can be advanced safely this pass.
+5. Each issue must include a branch name using `sandcastle/issue-{id}-{slug}`.
 
 # OUTPUT
 

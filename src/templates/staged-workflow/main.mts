@@ -4,6 +4,9 @@ import type {
   PromptArgs,
   StagedWorkflowAgentStage,
   StagedWorkflowControlMode,
+  StagedWorkflowPreparedIssue,
+  StagedWorkflowPrepareIssueContext,
+  StagedWorkflowModels,
   StagedWorkflowPreflightContext,
   StagedWorkflowTmuxLayoutPreset,
   StagedWorkflowTmuxOptions,
@@ -11,6 +14,7 @@ import type {
 } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { fileURLToPath } from "node:url";
+import type { SandboxProvider } from "@ai-hero/sandcastle";
 
 const hooks = {
   sandbox: { onSandboxReady: [{ command: "{{SANDBOX_READY_COMMAND}}" }] },
@@ -23,10 +27,17 @@ type LocalStagedWorkflowConfig = {
     model: string,
     stage: StagedWorkflowAgentStage,
   ) => AgentProvider;
+  createSandboxProvider?: () => SandboxProvider;
+  prepareIssue?: (
+    context: StagedWorkflowPrepareIssueContext,
+  ) => Promise<StagedWorkflowPreparedIssue | void> | StagedWorkflowPreparedIssue | void;
   promptArgs?: PromptArgs;
+  models?: Partial<StagedWorkflowModels>;
   preflight?: (context: StagedWorkflowPreflightContext) => Promise<void> | void;
   maxIssuesPerPass?: number;
   controlMode?: StagedWorkflowControlMode;
+  synthesisAfterReviewPass?: number;
+  auditEnabled?: boolean;
   issueContractFile?: string;
   copyToWorktree?: string[];
   tmuxLayoutPreset?: StagedWorkflowTmuxLayoutPreset;
@@ -55,18 +66,32 @@ const loadLocalConfig = async (): Promise<
 };
 
 const localConfig = await loadLocalConfig();
+const defaultModels: StagedWorkflowModels = {
+  default: "{{DEFAULT_MODEL}}",
+  planner: "{{PLANNER_MODEL}}",
+  decider: "{{DECIDER_MODEL}}",
+  implementer: "{{IMPLEMENTER_MODEL}}",
+  synthesizer: "{{IMPLEMENTER_MODEL}}",
+  reviewer: "{{REVIEWER_MODEL}}",
+  merger: "{{MERGER_MODEL}}",
+  auditor: "{{AUDITOR_MODEL}}",
+};
 
 await sandcastle.runStagedWorkflow({
   entryFile: fileURLToPath(import.meta.url),
   createAgent:
     localConfig?.createAgent ?? ((model) => sandcastle.claudeCode(model)),
-  createSandboxProvider: () => docker(),
+  createSandboxProvider:
+    localConfig?.createSandboxProvider ?? (() => docker()),
+  prepareIssue: localConfig?.prepareIssue,
   hooks,
   copyToWorktree: localConfig?.copyToWorktree ?? copyToWorktree,
   promptArgs: localConfig?.promptArgs,
   preflight: localConfig?.preflight,
   maxIssuesPerPass: localConfig?.maxIssuesPerPass ?? 1,
   controlMode: localConfig?.controlMode ?? "work-first",
+  synthesisAfterReviewPass: localConfig?.synthesisAfterReviewPass,
+  auditEnabled: localConfig?.auditEnabled ?? false,
   issueContractFile:
     localConfig?.issueContractFile ?? "./.sandcastle/issue-contract.md",
   tmuxLayoutPreset: localConfig?.tmuxLayoutPreset,
@@ -77,17 +102,10 @@ await sandcastle.runStagedWorkflow({
     plan: "./.sandcastle/plan-prompt.md",
     decide: "./.sandcastle/decide-prompt.md",
     implement: "./.sandcastle/implement-prompt.md",
+    synthesize: "./.sandcastle/implement-synthesis-prompt.md",
     review: "./.sandcastle/review-prompt.md",
     merge: "./.sandcastle/merge-prompt.md",
     audit: "./.sandcastle/audit-prompt.md",
   },
-  models: {
-    default: "{{DEFAULT_MODEL}}",
-    planner: "{{PLANNER_MODEL}}",
-    decider: "{{DECIDER_MODEL}}",
-    implementer: "{{IMPLEMENTER_MODEL}}",
-    reviewer: "{{REVIEWER_MODEL}}",
-    merger: "{{MERGER_MODEL}}",
-    auditor: "{{AUDITOR_MODEL}}",
-  },
+  models: { ...defaultModels, ...localConfig?.models },
 });

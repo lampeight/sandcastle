@@ -38,6 +38,7 @@ export interface StagedWorkflowModels {
   readonly planner?: string;
   readonly decider?: string;
   readonly implementer?: string;
+  readonly synthesizer?: string;
   readonly reviewer?: string;
   readonly merger?: string;
   readonly auditor?: string;
@@ -47,6 +48,7 @@ export type StagedWorkflowAgentStage =
   | "planner"
   | "decider"
   | "implementer"
+  | "synthesizer"
   | "reviewer"
   | "merger"
   | "auditor";
@@ -55,6 +57,7 @@ export interface StagedWorkflowStageFiles {
   readonly plan: string;
   readonly decide?: string;
   readonly implement: string;
+  readonly synthesize?: string;
   readonly review: string;
   readonly merge: string;
   readonly audit?: string;
@@ -66,6 +69,7 @@ export interface StagedWorkflowCliOptions {
   readonly maxIssuesPerPass?: number;
   readonly execution?: StagedWorkflowExecutionMode;
   readonly controlMode?: StagedWorkflowControlMode;
+  readonly synthesisAfterReviewPass?: number;
   readonly auditEnabled?: boolean;
   readonly preflightOnly?: boolean;
   readonly tmuxEnabled?: boolean;
@@ -73,6 +77,13 @@ export interface StagedWorkflowCliOptions {
   readonly logFile?: string;
   readonly showHelp?: boolean;
   readonly passthroughArgs: readonly string[];
+}
+
+export interface StagedWorkflowRuntimePaths {
+  readonly runId: string;
+  readonly artifactRoot: string;
+  readonly logsDir: string;
+  readonly mainLogFile: string;
 }
 
 export type StagedWorkflowTmuxLayoutPreset = "generic" | "operator";
@@ -87,12 +98,41 @@ export interface StagedWorkflowTmuxPane {
 export interface StagedWorkflowPreflightContext {
   readonly repoDir: string;
   readonly argv: readonly string[];
+  readonly runId: string;
+  readonly artifactRoot: string;
+  readonly logsDir: string;
+  readonly logFile: string;
   readonly models: StagedWorkflowModels;
   readonly maxPasses: number;
   readonly maxIssuesPerPass?: number;
+  readonly synthesisAfterReviewPass?: number;
   readonly execution: StagedWorkflowExecutionMode;
   readonly controlMode: StagedWorkflowControlMode;
   readonly auditEnabled: boolean;
+}
+
+export type StagedWorkflowIssueMode =
+  | "fresh"
+  | "review_rework"
+  | "merge_rework"
+  | "audit_rework";
+
+export interface StagedWorkflowPrepareIssueContext {
+  readonly repoDir: string;
+  readonly worktreePath: string;
+  readonly runtimePaths: StagedWorkflowRuntimePaths;
+  readonly pass: number;
+  readonly issue: StagedWorkflowIssue;
+  readonly mode: StagedWorkflowIssueMode;
+  readonly reviewPass: number;
+  readonly reviewFeedback?: string;
+  readonly issueContractFile: string;
+  readonly promptArgs: PromptArgs;
+}
+
+export interface StagedWorkflowPreparedIssue {
+  readonly issueContractFile?: string;
+  readonly promptArgs?: PromptArgs;
 }
 
 export interface StagedWorkflowOptions {
@@ -111,10 +151,17 @@ export interface StagedWorkflowOptions {
   readonly maxIssuesPerPass?: number;
   readonly execution?: StagedWorkflowExecutionMode;
   readonly controlMode?: StagedWorkflowControlMode;
+  readonly synthesisAfterReviewPass?: number;
   readonly auditEnabled?: boolean;
   readonly preflight?: (
     context: StagedWorkflowPreflightContext,
   ) => Promise<void> | void;
+  readonly prepareIssue?: (
+    context: StagedWorkflowPrepareIssueContext,
+  ) =>
+    | Promise<StagedWorkflowPreparedIssue | void>
+    | StagedWorkflowPreparedIssue
+    | void;
   readonly repoDir?: string;
   readonly logsDir?: string;
   readonly logFile?: string;
@@ -150,6 +197,7 @@ const HELP_TEXT = `Staged workflow flags:
   --planner-model <name>       Override planner model
   --decider-model <name>       Override proof/code decision model
   --implementer-model <name>   Override implementer model
+  --synthesizer-model <name>   Override cumulative review synthesis model
   --reviewer-model <name>      Override reviewer model
   --merger-model <name>        Override merger model
   --auditor-model <name>       Override auditor model
@@ -157,6 +205,8 @@ const HELP_TEXT = `Staged workflow flags:
   --max-issues-per-pass <n>    Limit issues executed in each pass
   --execution <sequential|parallel>
   --control-mode <work-first|proof-first>
+  --synthesis-after-review-pass <n>
+                              Run one cumulative synthesis fixer after this failed review pass
   --no-audit                   Disable audit stage
   --preflight-only             Run preflight hook, then exit
   --tmux                       Launch inside tmux
@@ -169,8 +219,73 @@ const stageModel = (
   stage: StagedWorkflowAgentStage,
 ): string => models[stage] ?? models.default;
 
+const logStageModel = (
+  stage: StagedWorkflowAgentStage,
+  model: string,
+  detail?: string,
+): void => {
+  const suffix = detail === undefined ? "" : ` ${detail}`;
+  console.log(`[model] ${stage}: ${model}${suffix}`);
+};
+
 const shellEscape = (value: string): string =>
   `'${value.replace(/'/g, `'\\''`)}'`;
+const MAX_REVIEW_PASSES = 5;
+
+const timestampForPath = (date: Date): string =>
+  date.toISOString().replace(/[:.]/g, "-");
+
+const slugForPath = (value: string): string =>
+  value
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+
+const findItemId = (argv: readonly string[]): string | undefined => {
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if (!arg) continue;
+    if (arg === "--item-id") return argv[index + 1];
+    if (arg.startsWith("--item-id=")) return arg.slice("--item-id=".length);
+  }
+  return argv.find((arg) => !arg.startsWith("-"));
+};
+
+export const makeStagedWorkflowRunId = (
+  argv: readonly string[],
+  now = new Date(),
+): string => {
+  const explicit = process.env.SANDCASTLE_RUN_ID?.trim();
+  if (explicit) return explicit;
+  const itemId = findItemId(argv);
+  const base = slugForPath(itemId ?? "staged-workflow") || "staged-workflow";
+  return `${base}-${timestampForPath(now)}`;
+};
+
+export const resolveStagedWorkflowRuntimePaths = (options: {
+  readonly repoDir: string;
+  readonly argv: readonly string[];
+  readonly logFile?: string;
+  readonly logsDir?: string;
+  readonly now?: Date;
+}): StagedWorkflowRuntimePaths => {
+  const runId = makeStagedWorkflowRunId(options.argv, options.now);
+  const artifactRoot = resolve(
+    options.repoDir,
+    process.env.SANDCASTLE_ARTIFACT_ROOT?.trim() ||
+      join(".sandcastle", "runs", runId),
+  );
+  const logsDir = resolve(
+    options.repoDir,
+    options.logsDir ?? join(artifactRoot, "logs"),
+  );
+  const mainLogFile = resolve(
+    options.repoDir,
+    options.logFile ?? join(artifactRoot, "main.out"),
+  );
+  return { runId, artifactRoot, logsDir, mainLogFile };
+};
 
 const extractLastTag = (stdout: string, tag: string): string => {
   const regex = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "g");
@@ -184,6 +299,82 @@ const extractLastTag = (stdout: string, tag: string): string => {
 
 const parseTaggedJson = <T>(stdout: string, tag: string): T =>
   JSON.parse(extractLastTag(stdout, tag)) as T;
+
+const ensureReviewResult = (
+  stdout: string,
+): {
+  status: "approve" | "changes_required";
+  summary: string;
+  findings: Array<{
+    title?: string;
+    details?: string;
+    code_refs?: string[];
+  }>;
+} => {
+  const parsed = parseTaggedJson<{
+    status?: unknown;
+    summary?: unknown;
+    findings?: unknown;
+    matrix?: unknown;
+  }>(stdout, "review_result");
+  if (parsed.status !== "approve" && parsed.status !== "changes_required") {
+    throw new Error(
+      `Unknown review status "${String(parsed.status)}". Expected "approve" or "changes_required".`,
+    );
+  }
+  const findings = Array.isArray(parsed.findings)
+    ? parsed.findings
+    : Array.isArray(parsed.matrix)
+      ? parsed.matrix
+          .filter(
+            (
+              row,
+            ): row is {
+              id?: unknown;
+              status?: unknown;
+              notes?: unknown;
+              code_refs?: unknown;
+            } =>
+              typeof row === "object" && row !== null && row.status !== "pass",
+          )
+          .map((row) => ({
+            title: typeof row.id === "string" ? row.id : "Review finding",
+            details: typeof row.notes === "string" ? row.notes : "",
+            code_refs: Array.isArray(row.code_refs)
+              ? row.code_refs.filter(
+                  (entry): entry is string => typeof entry === "string",
+                )
+              : [],
+          }))
+      : [];
+  return {
+    status: parsed.status,
+    summary: typeof parsed.summary === "string" ? parsed.summary : "",
+    findings,
+  };
+};
+
+type StagedWorkflowReviewResult = ReturnType<typeof ensureReviewResult>;
+
+const formatReviewFeedback = (
+  reviewPass: number,
+  reviewResult: StagedWorkflowReviewResult,
+): string =>
+  [
+    `Review pass ${reviewPass} requires changes.`,
+    reviewResult.summary ? `Summary: ${reviewResult.summary}` : "",
+    ...reviewResult.findings.map((finding, index) => {
+      const details =
+        typeof finding?.details === "string" ? finding.details : "";
+      const refs =
+        Array.isArray(finding?.code_refs) && finding.code_refs.length > 0
+          ? ` [${finding.code_refs.join(", ")}]`
+          : "";
+      return `Finding ${index + 1}: ${String(finding?.title ?? "Untitled finding")}${refs}${details ? ` - ${details}` : ""}`;
+    }),
+  ]
+    .filter(Boolean)
+    .join("\n");
 
 const ensureDecision = (
   stdout: string,
@@ -221,25 +412,28 @@ const withLogSymlink = async (logFile: string): Promise<void> => {
   } catch {}
 };
 
-const computeDefaultLogFile = (repoDir: string): string => {
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return join(repoDir, ".sandcastle", "logs", `staged-workflow-${stamp}.log`);
-};
-
-const stagedLogPath = (repoDir: string, name: string): string =>
-  process.env.SANDCASTLE_ARTIFACT_ROOT?.trim()
-    ? join(process.env.SANDCASTLE_ARTIFACT_ROOT.trim(), "logs", name)
-    : join(repoDir, ".sandcastle", "logs", name);
+const stagedLogPath = (
+  repoDir: string,
+  name: string,
+  logsDir?: string,
+): string =>
+  join(
+    logsDir ??
+      resolveStagedWorkflowRuntimePaths({
+        repoDir,
+        argv: process.argv.slice(2),
+      }).logsDir,
+    name,
+  );
 
 const buildLogWatcherShell = (
-  repoDir: string,
+  logsDir: string,
   label: string,
   filterTokens: readonly string[],
 ): string => {
-  const logsDir = join(repoDir, ".sandcastle", "logs");
   const filterArg = filterTokens.join(",");
   return `/bin/bash -lc ${shellEscape(
-    `repo_root=${shellEscape(repoDir)}; filter_tokens=${shellEscape(filterArg)}; label=${shellEscape(label)}; logs_dir="$repo_root/.sandcastle/logs"; mkdir -p "$logs_dir"; current_file=""; tail_pid=""; if [[ -t 1 ]]; then c_reset=$'\\033[0m'; c_title=$'\\033[1;36m'; c_key=$'\\033[0;33m'; c_dim=$'\\033[0;90m'; else c_reset=""; c_title=""; c_key=""; c_dim=""; fi; cleanup() { if [[ -n "$tail_pid" ]] && kill -0 "$tail_pid" 2>/dev/null; then kill "$tail_pid" 2>/dev/null || true; wait "$tail_pid" 2>/dev/null || true; fi; }; trap cleanup EXIT INT TERM; render_header() { local current_name="$1"; clear; printf '%s== %s ==%s\\n' "$c_title" "$label" "$c_reset"; printf '%sfile%s: %s\\n' "$c_key" "$c_reset" "$current_name"; printf '%sdir %s: %s\\n' "$c_key" "$c_reset" "$logs_dir"; printf '%s%s%s\\n\\n' "$c_dim" '------------------------------------------------------------' "$c_reset"; }; render_header waiting; matches_filter() { local file_name="$1"; local token=""; if [[ -z "$filter_tokens" ]]; then return 0; fi; IFS=',' read -r -a tokens <<< "$filter_tokens"; for token in "\${tokens[@]}"; do [[ -n "$token" ]] || continue; if [[ "$file_name" == *"$token"* ]]; then return 0; fi; done; return 1; }; latest_log_file() { local candidate=""; local candidate_mtime=""; local file=""; local mtime=""; local base_name=""; shopt -s nullglob; for file in "$logs_dir"/*.log; do [[ -f "$file" ]] || continue; base_name="$(basename "$file")"; matches_filter "$base_name" || continue; mtime="$(stat -c '%Y' "$file" 2>/dev/null || true)"; [[ -n "$mtime" ]] || continue; if [[ -z "$candidate_mtime" || "$mtime" -gt "$candidate_mtime" ]]; then candidate="$file"; candidate_mtime="$mtime"; fi; done; shopt -u nullglob; printf '%s\\n' "$candidate"; }; while true; do latest_file="$(latest_log_file)"; if [[ -n "$latest_file" && "$latest_file" != "$current_file" ]]; then cleanup; current_file="$latest_file"; render_header "$(basename "$current_file")"; tail -n 40 -F "$current_file" & tail_pid="$!"; fi; sleep 1; done`,
+    `filter_tokens=${shellEscape(filterArg)}; label=${shellEscape(label)}; logs_dir=${shellEscape(logsDir)}; mkdir -p "$logs_dir"; current_file=""; tail_pid=""; if [[ -t 1 ]]; then c_reset=$'\\033[0m'; c_title=$'\\033[1;36m'; c_key=$'\\033[0;33m'; c_dim=$'\\033[0;90m'; else c_reset=""; c_title=""; c_key=""; c_dim=""; fi; cleanup() { if [[ -n "$tail_pid" ]] && kill -0 "$tail_pid" 2>/dev/null; then kill "$tail_pid" 2>/dev/null || true; wait "$tail_pid" 2>/dev/null || true; fi; }; trap cleanup EXIT INT TERM; render_header() { local current_name="$1"; clear; printf '%s== %s ==%s\\n' "$c_title" "$label" "$c_reset"; printf '%sfile%s: %s\\n' "$c_key" "$c_reset" "$current_name"; printf '%sdir %s: %s\\n' "$c_key" "$c_reset" "$logs_dir"; printf '%s%s%s\\n\\n' "$c_dim" '------------------------------------------------------------' "$c_reset"; }; render_header waiting; matches_filter() { local file_name="$1"; local token=""; if [[ -z "$filter_tokens" ]]; then return 0; fi; IFS=',' read -r -a tokens <<< "$filter_tokens"; for token in "\${tokens[@]}"; do [[ -n "$token" ]] || continue; if [[ "$file_name" == *"$token"* ]]; then return 0; fi; done; return 1; }; latest_log_file() { local candidate=""; local candidate_mtime=""; local file=""; local mtime=""; local base_name=""; shopt -s nullglob; for file in "$logs_dir"/*.log; do [[ -f "$file" ]] || continue; base_name="$(basename "$file")"; matches_filter "$base_name" || continue; mtime="$(stat -c '%Y' "$file" 2>/dev/null || true)"; [[ -n "$mtime" ]] || continue; if [[ -z "$candidate_mtime" || "$mtime" -gt "$candidate_mtime" ]]; then candidate="$file"; candidate_mtime="$mtime"; fi; done; shopt -u nullglob; printf '%s\\n' "$candidate"; }; while true; do latest_file="$(latest_log_file)"; if [[ -n "$latest_file" && "$latest_file" != "$current_file" ]]; then cleanup; current_file="$latest_file"; render_header "$(basename "$current_file")"; tail -n 40 -F "$current_file" & tail_pid="$!"; fi; sleep 1; done`,
   )}`;
 };
 
@@ -249,6 +443,7 @@ export const getStagedWorkflowTmuxPanes = (
   logFile: string,
   preset: StagedWorkflowTmuxLayoutPreset = "generic",
   tmuxPanes?: readonly StagedWorkflowTmuxPane[],
+  logsDir = join(repoDir, ".sandcastle", "logs"),
 ): readonly StagedWorkflowTmuxPane[] => {
   if (tmuxPanes && tmuxPanes.length > 0) {
     return tmuxPanes;
@@ -258,14 +453,14 @@ export const getStagedWorkflowTmuxPanes = (
     return [
       {
         label: "plan/merge logs",
-        shellCommand: buildLogWatcherShell(repoDir, "plan/merge logs", [
+        shellCommand: buildLogWatcherShell(logsDir, "plan/merge logs", [
           "planner",
           "merger",
         ]),
       },
       {
         label: "review/audit logs",
-        shellCommand: buildLogWatcherShell(repoDir, "review/audit logs", [
+        shellCommand: buildLogWatcherShell(logsDir, "review/audit logs", [
           "reviewer",
           "auditor",
           "repo-audit",
@@ -273,7 +468,7 @@ export const getStagedWorkflowTmuxPanes = (
       },
       {
         label: "implementer logs",
-        shellCommand: buildLogWatcherShell(repoDir, "implementer logs", [
+        shellCommand: buildLogWatcherShell(logsDir, "implementer logs", [
           "implementer",
         ]),
       },
@@ -306,6 +501,7 @@ const maybeLaunchInTmux = async (
   entryFile: string,
   repoDir: string,
   cliOptions: StagedWorkflowCliOptions,
+  runtimePaths: StagedWorkflowRuntimePaths,
   workflowOptions: Pick<
     StagedWorkflowOptions,
     | "tmuxLayoutPreset"
@@ -318,10 +514,8 @@ const maybeLaunchInTmux = async (
     return undefined;
   }
 
-  const logFile = resolve(
-    repoDir,
-    cliOptions.logFile ?? computeDefaultLogFile(repoDir),
-  );
+  const logFile = runtimePaths.mainLogFile;
+  await mkdir(runtimePaths.logsDir, { recursive: true });
   await withLogSymlink(logFile);
 
   const sessionName =
@@ -333,6 +527,8 @@ const maybeLaunchInTmux = async (
   const command = [
     "env",
     `${TMUX_CHILD_ENV}=1`,
+    `SANDCASTLE_RUN_ID=${shellEscape(runtimePaths.runId)}`,
+    `SANDCASTLE_ARTIFACT_ROOT=${shellEscape(runtimePaths.artifactRoot)}`,
     "node",
     "--import",
     "tsx",
@@ -349,6 +545,7 @@ const maybeLaunchInTmux = async (
     logFile,
     workflowOptions.tmuxLayoutPreset,
     workflowOptions.tmuxPanes,
+    runtimePaths.logsDir,
   );
 
   const { stdout: workflowPaneRaw } = await execFile("tmux", [
@@ -396,7 +593,11 @@ const maybeLaunchInTmux = async (
       "-t",
       splitTargetPaneId,
       pane.shellCommand ??
-        buildLogWatcherShell(repoDir, pane.label, pane.filterTokens ?? []),
+        buildLogWatcherShell(
+          runtimePaths.logsDir,
+          pane.label,
+          pane.filterTokens ?? [],
+        ),
     ]);
     splitTargetPaneId = paneIdRaw.trim();
     await execFile("tmux", [
@@ -417,6 +618,8 @@ const maybeLaunchInTmux = async (
   ]);
 
   console.log(`tmux session: ${sessionName}`);
+  console.log(`run id: ${runtimePaths.runId}`);
+  console.log(`artifact root: ${runtimePaths.artifactRoot}`);
   console.log(`log file: ${logFile}`);
   console.log(`attach: tmux attach -t ${sessionName}`);
   return logFile;
@@ -431,12 +634,14 @@ export const parseStagedWorkflowCliArgs = (
     planner?: string;
     decider?: string;
     implementer?: string;
+    synthesizer?: string;
     reviewer?: string;
     merger?: string;
     auditor?: string;
   } = { ...defaults };
   let maxPasses: number | undefined;
   let maxIssuesPerPass: number | undefined;
+  let synthesisAfterReviewPass: number | undefined;
   let execution: StagedWorkflowExecutionMode | undefined;
   let controlMode: StagedWorkflowControlMode | undefined;
   let auditEnabled: boolean | undefined;
@@ -473,6 +678,10 @@ export const parseStagedWorkflowCliArgs = (
         models.implementer = readValue(index, arg);
         index++;
         break;
+      case "--synthesizer-model":
+        models.synthesizer = readValue(index, arg);
+        index++;
+        break;
       case "--reviewer-model":
         models.reviewer = readValue(index, arg);
         index++;
@@ -491,6 +700,10 @@ export const parseStagedWorkflowCliArgs = (
         break;
       case "--max-issues-per-pass":
         maxIssuesPerPass = Number.parseInt(readValue(index, arg), 10);
+        index++;
+        break;
+      case "--synthesis-after-review-pass":
+        synthesisAfterReviewPass = Number.parseInt(readValue(index, arg), 10);
         index++;
         break;
       case "--execution": {
@@ -548,11 +761,22 @@ export const parseStagedWorkflowCliArgs = (
       `Invalid --max-issues-per-pass value "${String(maxIssuesPerPass)}"`,
     );
   }
+  if (
+    synthesisAfterReviewPass !== undefined &&
+    (!Number.isFinite(synthesisAfterReviewPass) ||
+      synthesisAfterReviewPass < 1 ||
+      synthesisAfterReviewPass > MAX_REVIEW_PASSES)
+  ) {
+    throw new Error(
+      `Invalid --synthesis-after-review-pass value "${String(synthesisAfterReviewPass)}"`,
+    );
+  }
 
   return {
     models,
     maxPasses,
     maxIssuesPerPass,
+    synthesisAfterReviewPass,
     execution,
     controlMode,
     auditEnabled,
@@ -570,13 +794,16 @@ const runPlanner = async (
   models: StagedWorkflowModels,
   pass: number,
 ): Promise<StagedWorkflowPlan> => {
+  const model = stageModel(models, "planner");
+  logStageModel("planner", model, `(pass ${pass})`);
   const result = await run({
     sandbox: options.createSandboxProvider(),
     hooks: options.hooks,
     cwd: options.repoDir,
     name: "planner",
+    model,
     maxIterations: 1,
-    agent: options.createAgent(stageModel(models, "planner"), "planner"),
+    agent: options.createAgent(model, "planner"),
     promptFile: options.stageFiles.plan,
     promptArgs: options.promptArgs,
     logging: {
@@ -584,6 +811,7 @@ const runPlanner = async (
       path: stagedLogPath(
         options.repoDir ?? process.cwd(),
         `iteration-${String(pass).padStart(2, "0")}-planner.log`,
+        options.logsDir,
       ),
     },
   });
@@ -596,9 +824,11 @@ const runPlanner = async (
 
 const runIssuePipeline = async (
   workflow: StagedWorkflowOptions,
+  runtimePaths: StagedWorkflowRuntimePaths,
   models: StagedWorkflowModels,
   issue: StagedWorkflowIssue,
   controlMode: StagedWorkflowControlMode,
+  synthesisAfterReviewPass: number | undefined,
   pass: number,
 ): Promise<StagedWorkflowRunIssueResult> => {
   const sandbox = await createSandbox({
@@ -615,37 +845,40 @@ const runIssuePipeline = async (
       TASK_ID: issue.id,
       ISSUE_TITLE: issue.title,
       BRANCH: issue.branch,
-      ISSUE_CONTRACT_FILE:
-        workflow.issueContractFile ?? "./.sandcastle/issue-contract.md",
     };
+    const defaultIssueContractFile =
+      workflow.issueContractFile ?? "./.sandcastle/issue-contract.md";
 
     const decision: StagedWorkflowDecision =
       controlMode === "proof-first"
         ? ensureDecision(
             (
-              await sandbox.run({
-                name: `decider:${issue.id}`,
-                maxIterations: 1,
-                agent: workflow.createAgent(
-                  stageModel(models, "decider"),
-                  "decider",
-                ),
-                promptFile:
-                  workflow.stageFiles.decide ??
-                  (() => {
-                    throw new Error(
-                      "proof-first control mode requires a decide prompt file.",
-                    );
-                  })(),
-                promptArgs,
-                logging: {
-                  type: "file",
-                  path: stagedLogPath(
-                    workflow.repoDir ?? process.cwd(),
-                    `iteration-${String(pass).padStart(2, "0")}-issue-${issue.id}-decider.log`,
-                  ),
-                },
-              })
+              await (() => {
+                const model = stageModel(models, "decider");
+                logStageModel("decider", model, `(issue ${issue.id})`);
+                return sandbox.run({
+                  name: `decider:${issue.id}`,
+                  model,
+                  maxIterations: 1,
+                  agent: workflow.createAgent(model, "decider"),
+                  promptFile:
+                    workflow.stageFiles.decide ??
+                    (() => {
+                      throw new Error(
+                        "proof-first control mode requires a decide prompt file.",
+                      );
+                    })(),
+                  promptArgs,
+                  logging: {
+                    type: "file",
+                    path: stagedLogPath(
+                      workflow.repoDir ?? process.cwd(),
+                      `iteration-${String(pass).padStart(2, "0")}-issue-${issue.id}-decider.log`,
+                      workflow.logsDir,
+                    ),
+                  },
+                });
+              })()
             ).stdout,
             workflow.decisionTag ?? DEFAULT_DECISION_TAG,
           )
@@ -657,42 +890,139 @@ const runIssuePipeline = async (
     const commits: { sha: string }[] = [];
 
     if (decision.type === "code_gap" || decision.type === "proof_gap") {
-      const implement = await sandbox.run({
-        name: `implementer:${issue.id}`,
-        maxIterations: 100,
-        agent: workflow.createAgent(
-          stageModel(models, "implementer"),
-          "implementer",
-        ),
-        promptFile: workflow.stageFiles.implement,
-        promptArgs,
-        logging: {
-          type: "file",
-          path: stagedLogPath(
-            workflow.repoDir ?? process.cwd(),
-            `iteration-${String(pass).padStart(2, "0")}-issue-${issue.id}-implementer.log`,
-          ),
-        },
-      });
-      commits.push(...implement.commits);
-    }
+      let reviewFeedback = "";
+      const reviewHistory: string[] = [];
+      let synthesisUsed = false;
+      for (let reviewPass = 1; reviewPass <= MAX_REVIEW_PASSES; reviewPass++) {
+        const issueMode: StagedWorkflowIssueMode =
+          reviewPass === 1 ? "fresh" : "review_rework";
+        const preparedIssue = await workflow.prepareIssue?.({
+          repoDir: workflow.repoDir ?? process.cwd(),
+          worktreePath: sandbox.worktreePath,
+          runtimePaths,
+          pass,
+          issue,
+          mode: issueMode,
+          reviewPass,
+          reviewFeedback: reviewFeedback || undefined,
+          issueContractFile: defaultIssueContractFile,
+          promptArgs,
+        });
+        const effectiveIssueContractFile =
+          preparedIssue?.issueContractFile ?? defaultIssueContractFile;
+        const effectivePromptArgs: PromptArgs = {
+          ...promptArgs,
+          ...preparedIssue?.promptArgs,
+          ISSUE_CONTRACT_FILE: effectiveIssueContractFile,
+        };
+        const useSynthesis =
+          synthesisAfterReviewPass !== undefined &&
+          reviewPass > synthesisAfterReviewPass &&
+          !synthesisUsed &&
+          workflow.stageFiles.synthesize !== undefined;
+        const implementStage = useSynthesis ? "synthesizer" : "implementer";
+        const implementModel = stageModel(models, implementStage);
+        logStageModel(
+          implementStage,
+          implementModel,
+          `(issue ${issue.id}, review pass ${reviewPass})`,
+        );
+        const implement = await sandbox.run({
+          name: `implementer:${issue.id}`,
+          model: implementModel,
+          maxIterations: 100,
+          agent: workflow.createAgent(implementModel, implementStage),
+          promptFile: useSynthesis
+            ? workflow.stageFiles.synthesize!
+            : reviewPass === 1
+              ? workflow.stageFiles.implement
+              : workflow.stageFiles.implement.replace(
+                  "implement-prompt.md",
+                  "implement-rework-prompt.md",
+                ),
+          promptArgs: {
+            ...effectivePromptArgs,
+            ISSUE_ID: issue.id,
+            REVIEW_FEEDBACK: reviewFeedback,
+            REVIEW_HISTORY: reviewHistory.join("\n\n---\n\n"),
+            REVIEW_PASS: String(reviewPass),
+            SYNTHESIS_TRIGGER_PASS: String(synthesisAfterReviewPass ?? ""),
+          },
+          logging: {
+            type: "file",
+            path: stagedLogPath(
+              workflow.repoDir ?? process.cwd(),
+              `iteration-${String(pass).padStart(2, "0")}-issue-${issue.id}-implementer-pass-${String(reviewPass).padStart(2, "0")}.log`,
+              workflow.logsDir,
+            ),
+          },
+        });
+        commits.push(...implement.commits);
+        if (useSynthesis) {
+          synthesisUsed = true;
+        }
 
-    if (commits.length > 0) {
-      const review = await sandbox.run({
-        name: `reviewer:${issue.id}`,
-        maxIterations: 1,
-        agent: workflow.createAgent(stageModel(models, "reviewer"), "reviewer"),
-        promptFile: workflow.stageFiles.review,
-        promptArgs,
-        logging: {
-          type: "file",
-          path: stagedLogPath(
-            workflow.repoDir ?? process.cwd(),
-            `iteration-${String(pass).padStart(2, "0")}-issue-${issue.id}-reviewer.log`,
-          ),
-        },
-      });
-      commits.push(...review.commits);
+        const reviewerModel = stageModel(models, "reviewer");
+        logStageModel(
+          "reviewer",
+          reviewerModel,
+          `(issue ${issue.id}, pass ${reviewPass})`,
+        );
+        const review = await sandbox.run({
+          name: `reviewer:${issue.id}`,
+          model: reviewerModel,
+          maxIterations: 1,
+          agent: workflow.createAgent(reviewerModel, "reviewer"),
+          promptFile: workflow.stageFiles.review,
+          promptArgs: {
+            ...effectivePromptArgs,
+            ISSUE_ID: issue.id,
+            REVIEW_FEEDBACK: reviewFeedback,
+          },
+          logging: {
+            type: "file",
+            path: stagedLogPath(
+              workflow.repoDir ?? process.cwd(),
+              `iteration-${String(pass).padStart(2, "0")}-issue-${issue.id}-reviewer-pass-${String(reviewPass).padStart(2, "0")}.log`,
+              workflow.logsDir,
+            ),
+          },
+        });
+        if (review.commits.length > 0) {
+          throw new Error(
+            `Reviewer must not commit code for issue ${issue.id}.`,
+          );
+        }
+        const reviewResult = ensureReviewResult(review.stdout);
+        if (reviewResult.status === "approve") {
+          break;
+        }
+        const formattedFeedback = formatReviewFeedback(
+          reviewPass,
+          reviewResult,
+        );
+        reviewHistory.push(formattedFeedback);
+        if (
+          synthesisAfterReviewPass !== undefined &&
+          reviewPass >= synthesisAfterReviewPass &&
+          !synthesisUsed &&
+          workflow.stageFiles.synthesize !== undefined
+        ) {
+          reviewFeedback = [
+            `Escalating after review pass ${reviewPass}.`,
+            "Use cumulative review history first; do not restart from the issue body.",
+            "",
+            reviewHistory.join("\n\n---\n\n"),
+          ].join("\n");
+          continue;
+        }
+        if (reviewPass === MAX_REVIEW_PASSES) {
+          throw new Error(
+            `Reviewer still requires changes for issue ${issue.id} after ${MAX_REVIEW_PASSES} passes.`,
+          );
+        }
+        reviewFeedback = formattedFeedback;
+      }
     }
 
     return {
@@ -713,13 +1043,16 @@ const runMerge = async (
   pass: number,
 ): Promise<void> => {
   if (mergedIssues.length === 0) return;
+  const model = stageModel(models, "merger");
+  logStageModel("merger", model, `(pass ${pass})`);
   await run({
     sandbox: workflow.createSandboxProvider(),
     hooks: workflow.hooks,
     cwd: workflow.repoDir,
     name: "merger",
+    model,
     maxIterations: 1,
-    agent: workflow.createAgent(stageModel(models, "merger"), "merger"),
+    agent: workflow.createAgent(model, "merger"),
     promptFile: workflow.stageFiles.merge,
     promptArgs: {
       ...workflow.promptArgs,
@@ -731,6 +1064,7 @@ const runMerge = async (
       path: stagedLogPath(
         workflow.repoDir ?? process.cwd(),
         `iteration-${String(pass).padStart(2, "0")}-merger.log`,
+        workflow.logsDir,
       ),
     },
   });
@@ -743,13 +1077,16 @@ const runAudit = async (
   pass: number,
 ): Promise<void> => {
   if (!workflow.stageFiles.audit || issues.length === 0) return;
+  const model = stageModel(models, "auditor");
+  logStageModel("auditor", model, `(pass ${pass})`);
   await run({
     sandbox: workflow.createSandboxProvider(),
     hooks: workflow.hooks,
     cwd: workflow.repoDir,
     name: "auditor",
+    model,
     maxIterations: 1,
-    agent: workflow.createAgent(stageModel(models, "auditor"), "auditor"),
+    agent: workflow.createAgent(model, "auditor"),
     promptFile: workflow.stageFiles.audit,
     promptArgs: {
       ...workflow.promptArgs,
@@ -767,6 +1104,7 @@ const runAudit = async (
       path: stagedLogPath(
         workflow.repoDir ?? process.cwd(),
         `iteration-${String(pass).padStart(2, "0")}-auditor.log`,
+        workflow.logsDir,
       ),
     },
   });
@@ -786,17 +1124,36 @@ export const runStagedWorkflow = async (
   const models = parsed.models;
   const maxPasses = parsed.maxPasses ?? options.maxPasses ?? 10;
   const maxIssuesPerPass = parsed.maxIssuesPerPass ?? options.maxIssuesPerPass;
+  const synthesisAfterReviewPass =
+    parsed.synthesisAfterReviewPass ?? options.synthesisAfterReviewPass;
   const execution = parsed.execution ?? options.execution ?? "sequential";
   const controlMode = parsed.controlMode ?? options.controlMode ?? "work-first";
   const auditEnabled = parsed.auditEnabled ?? options.auditEnabled ?? true;
+  const runtimePaths = resolveStagedWorkflowRuntimePaths({
+    repoDir,
+    argv,
+    logFile: parsed.logFile ?? options.logFile,
+    logsDir: options.logsDir,
+  });
+  const runtimeOptions: StagedWorkflowOptions = {
+    ...options,
+    repoDir,
+    logsDir: runtimePaths.logsDir,
+    logFile: runtimePaths.mainLogFile,
+  };
 
   if (options.preflight) {
     await options.preflight({
       repoDir,
       argv,
+      runId: runtimePaths.runId,
+      artifactRoot: runtimePaths.artifactRoot,
+      logsDir: runtimePaths.logsDir,
+      logFile: runtimePaths.mainLogFile,
       models,
       maxPasses,
       maxIssuesPerPass,
+      synthesisAfterReviewPass,
       execution,
       controlMode,
       auditEnabled,
@@ -806,12 +1163,18 @@ export const runStagedWorkflow = async (
     return { processedIssues: [], mergedIssues: [], logFile: parsed.logFile };
   }
 
-  const logFile = await maybeLaunchInTmux(options.entryFile, repoDir, parsed, {
-    tmuxLayoutPreset: options.tmuxLayoutPreset,
-    tmuxPanes: options.tmuxPanes,
-    tmuxSessionOptions: options.tmuxSessionOptions,
-    tmuxWindowOptions: options.tmuxWindowOptions,
-  });
+  const logFile = await maybeLaunchInTmux(
+    options.entryFile,
+    repoDir,
+    parsed,
+    runtimePaths,
+    {
+      tmuxLayoutPreset: options.tmuxLayoutPreset,
+      tmuxPanes: options.tmuxPanes,
+      tmuxSessionOptions: options.tmuxSessionOptions,
+      tmuxWindowOptions: options.tmuxWindowOptions,
+    },
+  );
   if (logFile) {
     return { processedIssues: [], mergedIssues: [], logFile };
   }
@@ -821,11 +1184,7 @@ export const runStagedWorkflow = async (
 
   for (let pass = 1; pass <= maxPasses; pass++) {
     console.log(`\n=== Pass ${pass}/${maxPasses} ===\n`);
-    const plan = await runPlanner(
-      { ...options, repoDir, logFile: parsed.logFile },
-      models,
-      pass,
-    );
+    const plan = await runPlanner(runtimeOptions, models, pass);
     if (!plan.issues.length) {
       console.log("No issues returned by planner. Exiting.");
       break;
@@ -844,10 +1203,12 @@ export const runStagedWorkflow = async (
 
     const executeIssue = (issue: StagedWorkflowIssue) =>
       runIssuePipeline(
-        { ...options, repoDir },
+        runtimeOptions,
+        runtimePaths,
         models,
         issue,
         controlMode,
+        synthesisAfterReviewPass,
         pass,
       );
 
@@ -874,12 +1235,12 @@ export const runStagedWorkflow = async (
       break;
     }
 
-    await runMerge({ ...options, repoDir }, models, mergeable, pass);
+    await runMerge(runtimeOptions, models, mergeable, pass);
     mergedIssues.push(...mergeable);
 
     if (auditEnabled) {
       await runAudit(
-        { ...options, repoDir, logFile: parsed.logFile },
+        runtimeOptions,
         models,
         passResults.filter((entry) => entry.shouldAudit),
         pass,
@@ -890,6 +1251,6 @@ export const runStagedWorkflow = async (
   return {
     processedIssues,
     mergedIssues,
-    logFile: parsed.logFile,
+    logFile: parsed.logFile ?? options.logFile,
   };
 };

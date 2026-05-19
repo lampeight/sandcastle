@@ -4,6 +4,7 @@ import type {
   AgentProvider,
   PromptArgs,
   StagedWorkflowAgentStage,
+  StagedWorkflowModels,
   StagedWorkflowPreflightContext,
   StagedWorkflowTmuxOptions,
   StagedWorkflowTmuxPane,
@@ -84,6 +85,13 @@ export const promptArgs: PromptArgs = {
 
 export const maxIssuesPerPass = 1;
 export const controlMode = "work-first";
+export const synthesisAfterReviewPass = 3;
+export const models: Partial<StagedWorkflowModels> = {
+  planner: "gpt-5.4-mini",
+  merger: "gpt-5.4-mini",
+  implementer: "gpt-5.5",
+  synthesizer: "gpt-5.5",
+};
 export const issueContractFile = "./.sandcastle/issue-contract.md";
 export const copyToWorktree: string[] = [];
 
